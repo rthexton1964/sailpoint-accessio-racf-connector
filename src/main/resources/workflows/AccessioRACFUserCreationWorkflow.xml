@@ -1,0 +1,234 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<!DOCTYPE Workflow PUBLIC "sailpoint.dtd" "sailpoint.dtd">
+<Workflow explicitTransitions="true" libraries="Identity,IdentityRequest" name="Accessio RACF User Creation Workflow" type="IdentityLifecycle">
+  
+  <Description>
+    Workflow for creating RACF users in Accessio system with multi-level approval based on user type.
+    Supports AARID, STC, and Technical user types with appropriate approval chains.
+  </Description>
+  
+  <Variable input="true" name="identityName" required="true">
+    <Description>Name of the identity being created</Description>
+  </Variable>
+  
+  <Variable input="true" name="plan" required="true">
+    <Description>Provisioning plan for the identity</Description>
+  </Variable>
+  
+  <Variable input="true" name="userType" required="true">
+    <Description>Type of user: AARID, STC, or Technical</Description>
+  </Variable>
+  
+  <Variable input="true" name="orgUnitId" required="true">
+    <Description>Organization unit ID for the user</Description>
+  </Variable>
+  
+  <Variable name="lineManager">
+    <Description>Line manager for AARID users</Description>
+  </Variable>
+  
+  <Variable name="orgUnitOwner">
+    <Description>Organization unit owner</Description>
+  </Variable>
+  
+  <Variable name="accountOwner">
+    <Description>Account owner for STC/Technical users</Description>
+  </Variable>
+  
+  <Variable name="approvalRequired" initializer="true">
+    <Description>Whether approval is required for this request</Description>
+  </Variable>
+  
+  <Variable name="approvers">
+    <Description>List of approvers for this request</Description>
+  </Variable>
+  
+  <Variable name="workflowId">
+    <Description>Workflow instance ID for tracking</Description>
+  </Variable>
+  
+  <Step icon="Start" name="Start" posX="25" posY="10">
+    <Transition to="Initialize Request"/>
+  </Step>
+  
+  <Step action="call:initializeUserCreationRequest" icon="Task" name="Initialize Request" posX="125" posY="10" resultVariable="requestData">
+    <Description>Initialize the user creation request and gather required data</Description>
+    <Arg name="identityName" value="ref:identityName"/>
+    <Arg name="plan" value="ref:plan"/>
+    <Arg name="userType" value="ref:userType"/>
+    <Arg name="orgUnitId" value="ref:orgUnitId"/>
+    <Transition to="Determine Approvers"/>
+  </Step>
+  
+  <Step action="call:determineApprovers" icon="Task" name="Determine Approvers" posX="225" posY="10" resultVariable="approverList">
+    <Description>Determine required approvers based on user type and organizational rules</Description>
+    <Arg name="identityName" value="ref:identityName"/>
+    <Arg name="userType" value="ref:userType"/>
+    <Arg name="orgUnitId" value="ref:orgUnitId"/>
+    <Script>
+      <Source>
+        import sailpoint.object.Identity;
+        import sailpoint.object.Application;
+        import sailpoint.connector.Connector;
+        import java.util.*;
+        
+        // Get the RACF application and connector
+        Application racfApp = context.getObjectByName(Application.class, "Accessio RACF");
+        Connector connector = sailpoint.connector.ConnectorFactory.getConnector(racfApp, null);
+        
+        List approvers = new ArrayList();
+        
+        if ("AARID".equals(userType)) {
+            // AARID users require line manager approval
+            Identity identity = context.getObjectByName(Identity.class, identityName);
+            if (identity != null && identity.getManager() != null) {
+                approvers.add(identity.getManager().getName());
+                workflow.put("lineManager", identity.getManager().getName());
+            }
+            
+            // Also require org unit owner approval
+            String orgOwner = connector.getOrgUnitOwner(orgUnitId);
+            if (orgOwner != null) {
+                approvers.add(orgOwner);
+                workflow.put("orgUnitOwner", orgOwner);
+            }
+            
+        } else if ("STC".equals(userType) || "Technical".equals(userType)) {
+            // STC and Technical users require account owner approval
+            String accountOwner = connector.getAccountOwner(identityName, userType);
+            if (accountOwner != null) {
+                approvers.add(accountOwner);
+                workflow.put("accountOwner", accountOwner);
+            }
+            
+            // Also require org unit owner approval
+            String orgOwner = connector.getOrgUnitOwner(orgUnitId);
+            if (orgOwner != null) {
+                approvers.add(orgOwner);
+                workflow.put("orgUnitOwner", orgOwner);
+            }
+        }
+        
+        workflow.put("approvers", approvers);
+        workflow.put("approvalRequired", approvers.size() > 0);
+        
+        return approvers;
+      </Source>
+    </Script>
+    <Transition to="Check Approval Required"/>
+  </Step>
+  
+  <Step icon="Task" name="Check Approval Required" posX="325" posY="10">
+    <Description>Check if approval is required for this request</Description>
+    <Transition to="Submit for Approval" when="ref:approvalRequired"/>
+    <Transition to="Execute Creation" when="!ref:approvalRequired"/>
+  </Step>
+  
+  <Step action="call:submitForApproval" icon="Approval" name="Submit for Approval" posX="425" posY="10" resultVariable="workflowId">
+    <Description>Submit the user creation request for approval</Description>
+    <Arg name="operationType" value="CREATE_USER"/>
+    <Arg name="targetId" value="ref:identityName"/>
+    <Arg name="attributes" value="ref:plan"/>
+    <Arg name="approvers" value="ref:approvers"/>
+    <Transition to="Wait for Approval"/>
+  </Step>
+  
+  <Step icon="Approval" name="Wait for Approval" posX="525" posY="10">
+    <Description>Wait for all required approvals</Description>
+    <Approval mode="serial" owner="ref:approvers" return="approvalSet">
+      <Arg name="workItem">
+        <WorkItem>
+          <Description>
+            Please review and approve the creation of user: $(ref:identityName)
+            User Type: $(ref:userType)
+            Organization Unit: $(ref:orgUnitId)
+          </Description>
+          <Display name="User Creation Approval" value="User: $(ref:identityName)"/>
+          <Form>
+            <Attributes>
+              <Map>
+                <entry key="identityName" value="ref:identityName"/>
+                <entry key="userType" value="ref:userType"/>
+                <entry key="orgUnitId" value="ref:orgUnitId"/>
+                <entry key="plan" value="ref:plan"/>
+              </Map>
+            </Attributes>
+            <Button action="approve" label="Approve"/>
+            <Button action="reject" label="Reject"/>
+          </Form>
+        </WorkItem>
+      </Arg>
+    </Approval>
+    <Transition to="Process Approval Decision"/>
+  </Step>
+  
+  <Step action="call:processApprovalDecision" icon="Task" name="Process Approval Decision" posX="625" posY="10">
+    <Description>Process the approval decision</Description>
+    <Arg name="workflowId" value="ref:workflowId"/>
+    <Arg name="approvalSet" value="ref:approvalSet"/>
+    <Transition to="Execute Creation" when="ref:allApproved"/>
+    <Transition to="Reject Request" when="!ref:allApproved"/>
+  </Step>
+  
+  <Step action="call:executeUserCreation" icon="Task" name="Execute Creation" posX="725" posY="10" resultVariable="creationResult">
+    <Description>Execute the user creation in RACF system</Description>
+    <Arg name="identityName" value="ref:identityName"/>
+    <Arg name="plan" value="ref:plan"/>
+    <Transition to="Creation Success" when="ref:creationSuccess"/>
+    <Transition to="Creation Failed" when="!ref:creationSuccess"/>
+  </Step>
+  
+  <Step icon="Task" name="Creation Success" posX="825" posY="10">
+    <Description>Handle successful user creation</Description>
+    <Script>
+      <Source>
+        // Log successful creation
+        log.info("RACF user creation completed successfully for: " + identityName);
+        
+        // Send notification to requestor
+        sailpoint.tools.Util.sendNotification(context, 
+            "User Creation Successful", 
+            "User " + identityName + " has been successfully created in RACF system.",
+            identityName);
+      </Source>
+    </Script>
+    <Transition to="End"/>
+  </Step>
+  
+  <Step icon="Task" name="Creation Failed" posX="825" posY="110">
+    <Description>Handle failed user creation</Description>
+    <Script>
+      <Source>
+        // Log creation failure
+        log.error("RACF user creation failed for: " + identityName + ", errors: " + creationErrors);
+        
+        // Send notification to requestor
+        sailpoint.tools.Util.sendNotification(context, 
+            "User Creation Failed", 
+            "User " + identityName + " creation failed in RACF system. Errors: " + creationErrors,
+            identityName);
+      </Source>
+    </Script>
+    <Transition to="End"/>
+  </Step>
+  
+  <Step icon="Task" name="Reject Request" posX="625" posY="110">
+    <Description>Handle rejected user creation request</Description>
+    <Script>
+      <Source>
+        // Log request rejection
+        log.info("RACF user creation request rejected for: " + identityName);
+        
+        // Send notification to requestor
+        sailpoint.tools.Util.sendNotification(context, 
+            "User Creation Request Rejected", 
+            "User " + identityName + " creation request has been rejected.",
+            identityName);
+      </Source>
+    </Script>
+    <Transition to="End"/>
+  </Step>
+  
+  <Step icon="Stop" name="End" posX="925" posY="60"/>
+  
+</Workflow>

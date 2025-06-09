@@ -1,0 +1,185 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<!DOCTYPE ProvisioningPolicy PUBLIC "sailpoint.dtd" "sailpoint.dtd">
+<ProvisioningPolicy name="Accessio RACF Provisioning Policy">
+  
+  <Description>
+    Provisioning policy for Accessio RACF application defining when workflows are triggered
+    and what approval processes are required for different operations.
+  </Description>
+  
+  <!-- User Creation Policy -->
+  <UsageTargets>
+    <UsageTarget>
+      <Application name="Accessio RACF"/>
+      <AccountSelector>
+        <MatchExpression>
+          <MatchTerm name="operation" value="Create"/>
+        </MatchExpression>
+      </AccountSelector>
+    </UsageTarget>
+  </UsageTargets>
+  
+  <PolicyRules>
+    
+    <!-- User Creation Rule -->
+    <PolicyRule name="RACF User Creation">
+      <Description>Policy rule for creating RACF users with approval workflow</Description>
+      <Filter>
+        <MatchExpression>
+          <MatchTerm name="operation" value="Create"/>
+        </MatchExpression>
+      </Filter>
+      <PolicyActions>
+        <PolicyAction name="Workflow">
+          <Attributes>
+            <Map>
+              <entry key="workflow" value="Accessio RACF User Creation Workflow"/>
+              <entry key="approvalRequired" value="true"/>
+              <entry key="notificationEnabled" value="true"/>
+            </Map>
+          </Attributes>
+        </PolicyAction>
+      </PolicyActions>
+    </PolicyRule>
+    
+    <!-- User Modification Rule -->
+    <PolicyRule name="RACF User Modification">
+      <Description>Policy rule for modifying RACF users with conditional approval</Description>
+      <Filter>
+        <MatchExpression>
+          <MatchTerm name="operation" value="Modify"/>
+        </MatchExpression>
+      </Filter>
+      <PolicyActions>
+        <PolicyAction name="Workflow">
+          <Attributes>
+            <Map>
+              <entry key="workflow" value="Accessio RACF User Modification Workflow"/>
+              <entry key="approvalRequired" value="true"/>
+              <entry key="notificationEnabled" value="true"/>
+            </Map>
+          </Attributes>
+        </PolicyAction>
+      </PolicyActions>
+    </PolicyRule>
+    
+    <!-- User Deletion Rule -->
+    <PolicyRule name="RACF User Deletion">
+      <Description>Policy rule for deleting RACF users with mandatory approval</Description>
+      <Filter>
+        <MatchExpression>
+          <MatchTerm name="operation" value="Delete"/>
+        </MatchExpression>
+      </Filter>
+      <PolicyActions>
+        <PolicyAction name="Workflow">
+          <Attributes>
+            <Map>
+              <entry key="workflow" value="Accessio RACF User Deletion Workflow"/>
+              <entry key="approvalRequired" value="true"/>
+              <entry key="notificationEnabled" value="true"/>
+              <entry key="auditRequired" value="true"/>
+            </Map>
+          </Attributes>
+        </PolicyAction>
+      </PolicyActions>
+    </PolicyRule>
+    
+    <!-- Role Assignment Rule -->
+    <PolicyRule name="RACF Role Assignment">
+      <Description>Policy rule for role assignments with SoD validation</Description>
+      <Filter>
+        <MatchExpression>
+          <Or>
+            <MatchTerm name="operation" value="Add"/>
+            <MatchTerm name="operation" value="Remove"/>
+          </Or>
+          <MatchTerm name="attribute" value="roles"/>
+        </MatchExpression>
+      </Filter>
+      <PolicyActions>
+        <PolicyAction name="Workflow">
+          <Attributes>
+            <Map>
+              <entry key="workflow" value="Accessio RACF Role Assignment Workflow"/>
+              <entry key="approvalRequired" value="true"/>
+              <entry key="sodValidation" value="true"/>
+              <entry key="notificationEnabled" value="true"/>
+            </Map>
+          </Attributes>
+        </PolicyAction>
+      </PolicyActions>
+    </PolicyRule>
+    
+    <!-- High-Privilege Role Rule -->
+    <PolicyRule name="RACF High-Privilege Role">
+      <Description>Special policy for high-privilege roles requiring elevated approval</Description>
+      <Filter>
+        <MatchExpression>
+          <MatchTerm name="attribute" value="roles"/>
+          <Or>
+            <MatchTerm name="value" value="*Guardian*"/>
+            <MatchTerm name="value" value="*Monitor*"/>
+            <MatchTerm name="value" value="*High-Privilege*"/>
+          </Or>
+        </MatchExpression>
+      </Filter>
+      <PolicyActions>
+        <PolicyAction name="Workflow">
+          <Attributes>
+            <Map>
+              <entry key="workflow" value="Accessio RACF Role Assignment Workflow"/>
+              <entry key="approvalRequired" value="true"/>
+              <entry key="elevatedApproval" value="true"/>
+              <entry key="securityOfficerApproval" value="true"/>
+              <entry key="sodValidation" value="true"/>
+              <entry key="notificationEnabled" value="true"/>
+              <entry key="auditRequired" value="true"/>
+            </Map>
+          </Attributes>
+        </PolicyAction>
+      </PolicyActions>
+    </PolicyRule>
+    
+    <!-- Emergency Access Rule -->
+    <PolicyRule name="RACF Emergency Access">
+      <Description>Emergency access bypass for critical situations</Description>
+      <Filter>
+        <MatchExpression>
+          <MatchTerm name="emergencyAccess" value="true"/>
+        </MatchExpression>
+      </Filter>
+      <PolicyActions>
+        <PolicyAction name="Allow">
+          <Attributes>
+            <Map>
+              <entry key="bypassApproval" value="true"/>
+              <entry key="auditRequired" value="true"/>
+              <entry key="notificationRequired" value="true"/>
+              <entry key="reviewRequired" value="true"/>
+              <entry key="reviewDays" value="1"/>
+            </Map>
+          </Attributes>
+        </PolicyAction>
+      </PolicyActions>
+    </PolicyRule>
+    
+  </PolicyRules>
+  
+  <!-- Global Policy Settings -->
+  <Attributes>
+    <Map>
+      <entry key="defaultApprovalTimeout" value="7"/>
+      <entry key="defaultApprovalTimeoutUnit" value="days"/>
+      <entry key="escalationEnabled" value="true"/>
+      <entry key="escalationTimeout" value="3"/>
+      <entry key="escalationTimeoutUnit" value="days"/>
+      <entry key="notificationEnabled" value="true"/>
+      <entry key="auditEnabled" value="true"/>
+      <entry key="sodValidationEnabled" value="true"/>
+      <entry key="emergencyAccessEnabled" value="true"/>
+      <entry key="emergencyAccessReviewDays" value="1"/>
+    </Map>
+  </Attributes>
+  
+</ProvisioningPolicy>

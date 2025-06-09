@@ -1,0 +1,345 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<!DOCTYPE Workflow PUBLIC "sailpoint.dtd" "sailpoint.dtd">
+<Workflow explicitTransitions="true" libraries="Identity,IdentityRequest" name="Accessio RACF User Modification Workflow" type="IdentityLifecycle">
+  
+  <Description>
+    Workflow for modifying RACF users in Accessio system with approval based on modification type.
+    Handles org unit transfers, attribute changes, and status modifications.
+  </Description>
+  
+  <Variable input="true" name="identityName" required="true">
+    <Description>Name of the identity being modified</Description>
+  </Variable>
+  
+  <Variable input="true" name="plan" required="true">
+    <Description>Provisioning plan containing modifications</Description>
+  </Variable>
+  
+  <Variable input="true" name="modificationType" required="true">
+    <Description>Type of modification: ORG_TRANSFER, ATTRIBUTE_CHANGE, STATUS_CHANGE</Description>
+  </Variable>
+  
+  <Variable name="currentOrgUnit">
+    <Description>Current organization unit of the user</Description>
+  </Variable>
+  
+  <Variable name="newOrgUnit">
+    <Description>New organization unit (for transfers)</Description>
+  </Variable>
+  
+  <Variable name="currentOrgOwner">
+    <Description>Current organization unit owner</Description>
+  </Variable>
+  
+  <Variable name="newOrgOwner">
+    <Description>New organization unit owner</Description>
+  </Variable>
+  
+  <Variable name="approvers">
+    <Description>List of approvers for this request</Description>
+  </Variable>
+  
+  <Variable name="workflowId">
+    <Description>Workflow instance ID for tracking</Description>
+  </Variable>
+  
+  <Variable name="changedAttributes">
+    <Description>List of attributes being changed</Description>
+  </Variable>
+  
+  <Step icon="Start" name="Start" posX="25" posY="10">
+    <Transition to="Initialize Modification Request"/>
+  </Step>
+  
+  <Step action="call:initializeModificationRequest" icon="Task" name="Initialize Modification Request" posX="125" posY="10" resultVariable="requestData">
+    <Description>Initialize the user modification request and analyze changes</Description>
+    <Arg name="identityName" value="ref:identityName"/>
+    <Arg name="plan" value="ref:plan"/>
+    <Arg name="modificationType" value="ref:modificationType"/>
+    <Script>
+      <Source>
+        import sailpoint.object.Identity;
+        import sailpoint.object.Application;
+        import sailpoint.connector.Connector;
+        import sailpoint.object.ProvisioningPlan;
+        import java.util.*;
+        
+        // Get the RACF application and connector
+        Application racfApp = context.getObjectByName(Application.class, "Accessio RACF");
+        Connector connector = sailpoint.connector.ConnectorFactory.getConnector(racfApp, null);
+        
+        // Get current user information
+        Identity identity = context.getObjectByName(Identity.class, identityName);
+        String currentOrgUnit = identity.getAttribute("orgUnitId");
+        
+        workflow.put("currentOrgUnit", currentOrgUnit);
+        
+        // Analyze the provisioning plan for changes
+        List changedAttributes = new ArrayList();
+        String newOrgUnit = null;
+        
+        if (plan != null && plan.getAccountRequests() != null) {
+            for (Object accountReq : plan.getAccountRequests()) {
+                if (accountReq.getAttributeRequests() != null) {
+                    for (Object attrReq : accountReq.getAttributeRequests()) {
+                        changedAttributes.add(attrReq.getName());
+                        if ("orgUnitId".equals(attrReq.getName())) {
+                            newOrgUnit = attrReq.getValue();
+                        }
+                    }
+                }
+            }
+        }
+        
+        workflow.put("changedAttributes", changedAttributes);
+        workflow.put("newOrgUnit", newOrgUnit);
+        
+        // Get org unit owners
+        if (currentOrgUnit != null) {
+            String currentOrgOwner = connector.getOrgUnitOwner(currentOrgUnit);
+            workflow.put("currentOrgOwner", currentOrgOwner);
+        }
+        
+        if (newOrgUnit != null && !newOrgUnit.equals(currentOrgUnit)) {
+            String newOrgOwner = connector.getOrgUnitOwner(newOrgUnit);
+            workflow.put("newOrgOwner", newOrgOwner);
+        }
+        
+        return "initialized";
+      </Source>
+    </Script>
+    <Transition to="Determine Modification Approvers"/>
+  </Step>
+  
+  <Step action="call:determineModificationApprovers" icon="Task" name="Determine Modification Approvers" posX="225" posY="10" resultVariable="approverList">
+    <Description>Determine required approvers based on modification type</Description>
+    <Arg name="identityName" value="ref:identityName"/>
+    <Arg name="modificationType" value="ref:modificationType"/>
+    <Arg name="changedAttributes" value="ref:changedAttributes"/>
+    <Script>
+      <Source>
+        import sailpoint.object.Identity;
+        import java.util.*;
+        
+        List approvers = new ArrayList();
+        Identity identity = context.getObjectByName(Identity.class, identityName);
+        String userType = identity.getAttribute("userType");
+        if (userType == null) userType = "AARID";
+        
+        if ("ORG_TRANSFER".equals(modificationType)) {
+            // Org unit transfer requires both current and new org owners
+            if (currentOrgOwner != null) {
+                approvers.add(currentOrgOwner);
+            }
+            if (newOrgOwner != null && !newOrgOwner.equals(currentOrgOwner)) {
+                approvers.add(newOrgOwner);
+            }
+            
+            // For AARID users, also require line manager approval
+            if ("AARID".equals(userType) && identity.getManager() != null) {
+                approvers.add(identity.getManager().getName());
+            }
+            
+        } else if ("ATTRIBUTE_CHANGE".equals(modificationType)) {
+            // Check if sensitive attributes are being changed
+            boolean hasSensitiveChanges = false;
+            List sensitiveAttrs = Arrays.asList("userType", "privilegeLevel", "securityClearance");
+            
+            for (Object attr : changedAttributes) {
+                if (sensitiveAttrs.contains(attr.toString())) {
+                    hasSensitiveChanges = true;
+                    break;
+                }
+            }
+            
+            if (hasSensitiveChanges) {
+                // Sensitive changes require elevated approval
+                if ("AARID".equals(userType) && identity.getManager() != null) {
+                    approvers.add(identity.getManager().getName());
+                }
+                if (currentOrgOwner != null) {
+                    approvers.add(currentOrgOwner);
+                }
+            } else {
+                // Standard attribute changes require org owner approval
+                if (currentOrgOwner != null) {
+                    approvers.add(currentOrgOwner);
+                }
+            }
+            
+        } else if ("STATUS_CHANGE".equals(modificationType)) {
+            // Status changes (enable/disable) require org owner approval
+            if (currentOrgOwner != null) {
+                approvers.add(currentOrgOwner);
+            }
+            
+            // For AARID users, also require line manager approval
+            if ("AARID".equals(userType) && identity.getManager() != null) {
+                approvers.add(identity.getManager().getName());
+            }
+        }
+        
+        workflow.put("approvers", approvers);
+        workflow.put("approvalRequired", approvers.size() > 0);
+        
+        return approvers;
+      </Source>
+    </Script>
+    <Transition to="Submit for Approval" when="ref:approvalRequired"/>
+    <Transition to="Execute Modification" when="!ref:approvalRequired"/>
+  </Step>
+  
+  <Step action="call:submitForApproval" icon="Approval" name="Submit for Approval" posX="325" posY="10" resultVariable="workflowId">
+    <Description>Submit the user modification request for approval</Description>
+    <Arg name="operationType" value="MODIFY_USER"/>
+    <Arg name="targetId" value="ref:identityName"/>
+    <Arg name="attributes" value="ref:plan"/>
+    <Arg name="approvers" value="ref:approvers"/>
+    <Transition to="Wait for Approval"/>
+  </Step>
+  
+  <Step icon="Approval" name="Wait for Approval" posX="425" posY="10">
+    <Description>Wait for all required approvals</Description>
+    <Approval mode="serial" owner="ref:approvers" return="approvalSet">
+      <Arg name="workItem">
+        <WorkItem>
+          <Description>
+            Please review and approve the modification of user: $(ref:identityName)
+            Modification Type: $(ref:modificationType)
+            $(if:ref:currentOrgUnit)Current Org Unit: $(ref:currentOrgUnit)$(endif)
+            $(if:ref:newOrgUnit)New Org Unit: $(ref:newOrgUnit)$(endif)
+            Changed Attributes: $(ref:changedAttributes)
+          </Description>
+          <Display name="User Modification Approval" value="User: $(ref:identityName)"/>
+          <Form>
+            <Attributes>
+              <Map>
+                <entry key="identityName" value="ref:identityName"/>
+                <entry key="modificationType" value="ref:modificationType"/>
+                <entry key="changedAttributes" value="ref:changedAttributes"/>
+                <entry key="currentOrgUnit" value="ref:currentOrgUnit"/>
+                <entry key="newOrgUnit" value="ref:newOrgUnit"/>
+              </Map>
+            </Attributes>
+            <Button action="approve" label="Approve"/>
+            <Button action="reject" label="Reject"/>
+          </Form>
+        </WorkItem>
+      </Arg>
+    </Approval>
+    <Transition to="Process Approval Decision"/>
+  </Step>
+  
+  <Step action="call:processApprovalDecision" icon="Task" name="Process Approval Decision" posX="525" posY="10">
+    <Description>Process the approval decision</Description>
+    <Arg name="workflowId" value="ref:workflowId"/>
+    <Arg name="approvalSet" value="ref:approvalSet"/>
+    <Transition to="Execute Modification" when="ref:allApproved"/>
+    <Transition to="Reject Request" when="!ref:allApproved"/>
+  </Step>
+  
+  <Step action="call:executeUserModification" icon="Task" name="Execute Modification" posX="625" posY="10" resultVariable="modificationResult">
+    <Description>Execute the user modification in RACF system</Description>
+    <Arg name="identityName" value="ref:identityName"/>
+    <Arg name="plan" value="ref:plan"/>
+    <Arg name="modificationType" value="ref:modificationType"/>
+    <Script>
+      <Source>
+        import sailpoint.object.Application;
+        import sailpoint.connector.Connector;
+        import com.sailpoint.connector.accessio.racf.RACFUserManager;
+        
+        try {
+            // Get the RACF application and connector
+            Application racfApp = context.getObjectByName(Application.class, "Accessio RACF");
+            Connector connector = sailpoint.connector.ConnectorFactory.getConnector(racfApp, null);
+            RACFUserManager userManager = connector.getUserManager();
+            
+            // Execute the modification based on type
+            boolean success = false;
+            String errors = null;
+            
+            if ("ORG_TRANSFER".equals(modificationType)) {
+                success = userManager.transferUser(identityName, newOrgUnit);
+            } else if ("ATTRIBUTE_CHANGE".equals(modificationType)) {
+                success = userManager.updateUser(identityName, plan);
+            } else if ("STATUS_CHANGE".equals(modificationType)) {
+                // Determine if enabling or disabling
+                boolean enable = plan.getAccountRequests().get(0).getAttributeRequests().stream()
+                    .anyMatch(attr -> "enabled".equals(attr.getName()) && Boolean.TRUE.equals(attr.getValue()));
+                
+                if (enable) {
+                    success = userManager.enableUser(identityName);
+                } else {
+                    success = userManager.disableUser(identityName);
+                }
+            }
+            
+            workflow.put("modificationSuccess", success);
+            workflow.put("modificationErrors", errors);
+            
+        } catch (Exception e) {
+            log.error("Error executing user modification: " + e.getMessage(), e);
+            workflow.put("modificationSuccess", false);
+            workflow.put("modificationErrors", e.getMessage());
+        }
+      </Source>
+    </Script>
+    <Transition to="Modification Success" when="ref:modificationSuccess"/>
+    <Transition to="Modification Failed" when="!ref:modificationSuccess"/>
+  </Step>
+  
+  <Step icon="Task" name="Modification Success" posX="725" posY="10">
+    <Description>Handle successful user modification</Description>
+    <Script>
+      <Source>
+        // Log successful modification
+        log.info("RACF user modification completed successfully for: " + identityName + ", type: " + modificationType);
+        
+        // Send notification to requestor
+        sailpoint.tools.Util.sendNotification(context, 
+            "User Modification Successful", 
+            "User " + identityName + " has been successfully modified in RACF system. Modification type: " + modificationType,
+            identityName);
+      </Source>
+    </Script>
+    <Transition to="End"/>
+  </Step>
+  
+  <Step icon="Task" name="Modification Failed" posX="725" posY="110">
+    <Description>Handle failed user modification</Description>
+    <Script>
+      <Source>
+        // Log modification failure
+        log.error("RACF user modification failed for: " + identityName + ", type: " + modificationType + ", errors: " + modificationErrors);
+        
+        // Send notification to requestor
+        sailpoint.tools.Util.sendNotification(context, 
+            "User Modification Failed", 
+            "User " + identityName + " modification failed in RACF system. Type: " + modificationType + ", Errors: " + modificationErrors,
+            identityName);
+      </Source>
+    </Script>
+    <Transition to="End"/>
+  </Step>
+  
+  <Step icon="Task" name="Reject Request" posX="525" posY="110">
+    <Description>Handle rejected user modification request</Description>
+    <Script>
+      <Source>
+        // Log request rejection
+        log.info("RACF user modification request rejected for: " + identityName + ", type: " + modificationType);
+        
+        // Send notification to requestor
+        sailpoint.tools.Util.sendNotification(context, 
+            "User Modification Request Rejected", 
+            "User " + identityName + " modification request has been rejected. Type: " + modificationType,
+            identityName);
+      </Source>
+    </Script>
+    <Transition to="End"/>
+  </Step>
+  
+  <Step icon="Stop" name="End" posX="825" posY="60"/>
+  
+</Workflow>

@@ -1,0 +1,93 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<!DOCTYPE TaskDefinition PUBLIC "sailpoint.dtd" "sailpoint.dtd">
+<TaskDefinition executor="sailpoint.task.ResourceIdentityScanTaskExecutor" 
+                name="Accessio RACF Account Aggregation" 
+                progressMode="String" 
+                resultAction="Rename" 
+                subType="task_item_type_account_aggregation" 
+                template="true" 
+                type="AccountAggregation">
+                
+  <Description>
+    Account aggregation task for Accessio RACF application.
+    Discovers and imports user accounts and role assignments from the Garancy system.
+  </Description>
+  
+  <Signature>
+    <Inputs>
+      <Argument name="applications" type="Application" multi="true" required="true">
+        <Description>Applications to aggregate</Description>
+      </Argument>
+      <Argument name="promoteManagedAttributes" type="boolean">
+        <Description>Promote managed attributes during aggregation</Description>
+      </Argument>
+      <Argument name="checkDeleted" type="boolean">
+        <Description>Check for deleted accounts</Description>
+      </Argument>
+      <Argument name="checkHistory" type="boolean">
+        <Description>Check account history</Description>
+      </Argument>
+      <Argument name="correlateEntitlements" type="boolean">
+        <Description>Correlate entitlements during aggregation</Description>
+      </Argument>
+      <Argument name="noOptimizeReaggregation" type="boolean">
+        <Description>Disable optimization for re-aggregation</Description>
+      </Argument>
+      <Argument name="processTargets" type="boolean">
+        <Description>Process target aggregation</Description>
+      </Argument>
+      <Argument name="refreshManagersAndOrgHierarchy" type="boolean">
+        <Description>Refresh manager and organizational hierarchy</Description>
+      </Argument>
+      <Argument name="refreshIdentityEntitlements" type="boolean">
+        <Description>Refresh identity entitlements</Description>
+      </Argument>
+    </Inputs>
+    <Returns>
+      <Argument name="taskResult" type="TaskResult">
+        <Description>Task execution result</Description>
+      </Argument>
+    </Returns>
+  </Signature>
+  
+  <Attributes>
+    <Map>
+      <!-- Default Configuration -->
+      <entry key="applications">
+        <List>
+          <Reference class="sailpoint.object.Application" name="Accessio RACF"/>
+        </List>
+      </entry>
+      <entry key="promoteManagedAttributes" value="true"/>
+      <entry key="checkDeleted" value="true"/>
+      <entry key="checkHistory" value="false"/>
+      <entry key="correlateEntitlements" value="true"/>
+      <entry key="noOptimizeReaggregation" value="false"/>
+      <entry key="processTargets" value="true"/>
+      <entry key="refreshManagersAndOrgHierarchy" value="true"/>
+      <entry key="refreshIdentityEntitlements" value="true"/>
+      
+      <!-- Performance Settings -->
+      <entry key="batchSize" value="100"/>
+      <entry key="optimizeAggregation" value="true"/>
+      <entry key="partitionMode" value="automatic"/>
+      <entry key="partitionSize" value="1000"/>
+      
+      <!-- Error Handling -->
+      <entry key="continueOnError" value="true"/>
+      <entry key="maxErrors" value="50"/>
+      <entry key="errorNotificationEnabled" value="true"/>
+      <entry key="errorNotificationRecipients" value="sailpoint-admins@accessio.com"/>
+      
+      <!-- Scheduling -->
+      <entry key="scheduleEnabled" value="true"/>
+      <entry key="cronExpression" value="0 0 2 * * ?"/> <!-- Daily at 2 AM -->
+      
+      <!-- Audit and Logging -->
+      <entry key="auditEnabled" value="true"/>
+      <entry key="detailedLogging" value="true"/>
+      <entry key="logLevel" value="INFO"/>
+    </Map>
+  </Attributes>
+  
+</TaskDefinition>

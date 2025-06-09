@@ -1,0 +1,356 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<!DOCTYPE Workflow PUBLIC "sailpoint.dtd" "sailpoint.dtd">
+<Workflow explicitTransitions="true" libraries="Identity,IdentityRequest" name="Accessio RACF Role Assignment Workflow" type="Provision">
+  
+  <Description>
+    Workflow for assigning/removing RACF roles with approval based on role type and user type.
+    Includes SoD validation and special handling for Guardian/Monitor roles.
+  </Description>
+  
+  <Variable input="true" name="identityName" required="true">
+    <Description>Name of the identity for role assignment</Description>
+  </Variable>
+  
+  <Variable input="true" name="plan" required="true">
+    <Description>Provisioning plan containing role assignments</Description>
+  </Variable>
+  
+  <Variable input="true" name="operation" required="true">
+    <Description>Operation type: ADD_ROLE or REMOVE_ROLE</Description>
+  </Variable>
+  
+  <Variable input="true" name="roleId" required="true">
+    <Description>Role ID being assigned or removed</Description>
+  </Variable>
+  
+  <Variable name="userType">
+    <Description>Type of user: AARID, STC, or Technical</Description>
+  </Variable>
+  
+  <Variable name="roleType">
+    <Description>Type of role: Guardian, Monitor, High-Privilege, or Standard</Description>
+  </Variable>
+  
+  <Variable name="sodConflicts">
+    <Description>List of SoD conflicts detected</Description>
+  </Variable>
+  
+  <Variable name="approvers">
+    <Description>List of approvers for this request</Description>
+  </Variable>
+  
+  <Variable name="workflowId">
+    <Description>Workflow instance ID for tracking</Description>
+  </Variable>
+  
+  <Step icon="Start" name="Start" posX="25" posY="10">
+    <Transition to="Initialize Role Request"/>
+  </Step>
+  
+  <Step action="call:initializeRoleRequest" icon="Task" name="Initialize Role Request" posX="125" posY="10" resultVariable="requestData">
+    <Description>Initialize the role assignment request and gather required data</Description>
+    <Arg name="identityName" value="ref:identityName"/>
+    <Arg name="roleId" value="ref:roleId"/>
+    <Arg name="operation" value="ref:operation"/>
+    <Script>
+      <Source>
+        import sailpoint.object.Identity;
+        import sailpoint.object.Application;
+        import sailpoint.connector.Connector;
+        import com.sailpoint.connector.accessio.racf.RACFRoleManager;
+        
+        // Get the RACF application and connector
+        Application racfApp = context.getObjectByName(Application.class, "Accessio RACF");
+        Connector connector = sailpoint.connector.ConnectorFactory.getConnector(racfApp, null);
+        RACFRoleManager roleManager = connector.getRoleManager();
+        
+        // Get user information
+        Identity identity = context.getObjectByName(Identity.class, identityName);
+        String userType = identity.getAttribute("userType");
+        if (userType == null) userType = "AARID"; // Default to AARID
+        
+        // Determine role type
+        String roleType = roleManager.getRoleType(roleId);
+        
+        workflow.put("userType", userType);
+        workflow.put("roleType", roleType);
+        
+        return "initialized";
+      </Source>
+    </Script>
+    <Transition to="Validate SoD"/>
+  </Step>
+  
+  <Step action="call:validateSoD" icon="Task" name="Validate SoD" posX="225" posY="10" resultVariable="sodResult">
+    <Description>Validate Segregation of Duties conflicts for role assignment</Description>
+    <Arg name="identityName" value="ref:identityName"/>
+    <Arg name="roleId" value="ref:roleId"/>
+    <Arg name="operation" value="ref:operation"/>
+    <Script>
+      <Source>
+        import sailpoint.object.Application;
+        import sailpoint.connector.Connector;
+        import com.sailpoint.connector.accessio.racf.RACFRoleManager;
+        import java.util.*;
+        
+        // Get the RACF application and connector
+        Application racfApp = context.getObjectByName(Application.class, "Accessio RACF");
+        Connector connector = sailpoint.connector.ConnectorFactory.getConnector(racfApp, null);
+        RACFRoleManager roleManager = connector.getRoleManager();
+        
+        List sodConflicts = new ArrayList();
+        
+        if ("ADD_ROLE".equals(operation)) {
+            // Check for SoD conflicts when adding role
+            sodConflicts = roleManager.validateRoleAssignment(identityName, roleId);
+        }
+        
+        workflow.put("sodConflicts", sodConflicts);
+        workflow.put("hasSoDConflicts", sodConflicts.size() > 0);
+        
+        return sodConflicts;
+      </Source>
+    </Script>
+    <Transition to="Handle SoD Conflicts" when="ref:hasSoDConflicts"/>
+    <Transition to="Determine Approvers" when="!ref:hasSoDConflicts"/>
+  </Step>
+  
+  <Step icon="Task" name="Handle SoD Conflicts" posX="325" posY="110">
+    <Description>Handle Segregation of Duties conflicts</Description>
+    <Script>
+      <Source>
+        // Log SoD conflicts
+        log.warn("SoD conflicts detected for user " + identityName + " and role " + roleId + ": " + sodConflicts);
+        
+        // For high-risk conflicts, reject automatically
+        boolean hasHighRiskConflict = false;
+        for (Object conflict : sodConflicts) {
+            if (conflict.toString().contains("HIGH_RISK")) {
+                hasHighRiskConflict = true;
+                break;
+            }
+        }
+        
+        workflow.put("hasHighRiskConflict", hasHighRiskConflict);
+        
+        if (hasHighRiskConflict) {
+            // Send notification about automatic rejection
+            sailpoint.tools.Util.sendNotification(context, 
+                "Role Assignment Rejected - SoD Conflict", 
+                "Role assignment for " + identityName + " was automatically rejected due to high-risk SoD conflicts.",
+                identityName);
+        }
+      </Source>
+    </Script>
+    <Transition to="SoD Rejection" when="ref:hasHighRiskConflict"/>
+    <Transition to="Determine Approvers" when="!ref:hasHighRiskConflict"/>
+  </Step>
+  
+  <Step action="call:determineRoleApprovers" icon="Task" name="Determine Approvers" posX="425" posY="10" resultVariable="approverList">
+    <Description>Determine required approvers based on role type and user type</Description>
+    <Arg name="identityName" value="ref:identityName"/>
+    <Arg name="roleId" value="ref:roleId"/>
+    <Arg name="userType" value="ref:userType"/>
+    <Arg name="roleType" value="ref:roleType"/>
+    <Script>
+      <Source>
+        import sailpoint.object.Identity;
+        import sailpoint.object.Application;
+        import sailpoint.connector.Connector;
+        import java.util.*;
+        
+        // Get the RACF application and connector
+        Application racfApp = context.getObjectByName(Application.class, "Accessio RACF");
+        Connector connector = sailpoint.connector.ConnectorFactory.getConnector(racfApp, null);
+        
+        List approvers = new ArrayList();
+        
+        // Get user's org unit
+        Identity identity = context.getObjectByName(Identity.class, identityName);
+        String orgUnitId = identity.getAttribute("orgUnitId");
+        
+        if ("Guardian".equals(roleType) || "Monitor".equals(roleType)) {
+            // Guardian and Monitor roles require special approval
+            String securityOfficer = connector.getSecurityOfficer();
+            if (securityOfficer != null) {
+                approvers.add(securityOfficer);
+            }
+        } else if ("High-Privilege".equals(roleType)) {
+            // High-privilege roles require elevated approval
+            if ("AARID".equals(userType)) {
+                // Line manager + org unit owner + security officer
+                if (identity.getManager() != null) {
+                    approvers.add(identity.getManager().getName());
+                }
+                String orgOwner = connector.getOrgUnitOwner(orgUnitId);
+                if (orgOwner != null) {
+                    approvers.add(orgOwner);
+                }
+                String securityOfficer = connector.getSecurityOfficer();
+                if (securityOfficer != null) {
+                    approvers.add(securityOfficer);
+                }
+            } else {
+                // STC/Technical: Account owner + security officer
+                String accountOwner = connector.getAccountOwner(identityName, userType);
+                if (accountOwner != null) {
+                    approvers.add(accountOwner);
+                }
+                String securityOfficer = connector.getSecurityOfficer();
+                if (securityOfficer != null) {
+                    approvers.add(securityOfficer);
+                }
+            }
+        } else {
+            // Standard roles follow normal approval flow
+            if ("AARID".equals(userType)) {
+                // Line manager + org unit owner
+                if (identity.getManager() != null) {
+                    approvers.add(identity.getManager().getName());
+                }
+                String orgOwner = connector.getOrgUnitOwner(orgUnitId);
+                if (orgOwner != null) {
+                    approvers.add(orgOwner);
+                }
+            } else {
+                // STC/Technical: Account owner
+                String accountOwner = connector.getAccountOwner(identityName, userType);
+                if (accountOwner != null) {
+                    approvers.add(accountOwner);
+                }
+            }
+        }
+        
+        workflow.put("approvers", approvers);
+        workflow.put("approvalRequired", approvers.size() > 0);
+        
+        return approvers;
+      </Source>
+    </Script>
+    <Transition to="Submit for Approval" when="ref:approvalRequired"/>
+    <Transition to="Execute Role Operation" when="!ref:approvalRequired"/>
+  </Step>
+  
+  <Step action="call:submitForApproval" icon="Approval" name="Submit for Approval" posX="525" posY="10" resultVariable="workflowId">
+    <Description>Submit the role assignment request for approval</Description>
+    <Arg name="operationType" value="ref:operation"/>
+    <Arg name="targetId" value="ref:identityName"/>
+    <Arg name="roleId" value="ref:roleId"/>
+    <Arg name="approvers" value="ref:approvers"/>
+    <Transition to="Wait for Approval"/>
+  </Step>
+  
+  <Step icon="Approval" name="Wait for Approval" posX="625" posY="10">
+    <Description>Wait for all required approvals</Description>
+    <Approval mode="serial" owner="ref:approvers" return="approvalSet">
+      <Arg name="workItem">
+        <WorkItem>
+          <Description>
+            Please review and approve the role $(ref:operation) for user: $(ref:identityName)
+            Role: $(ref:roleId)
+            Role Type: $(ref:roleType)
+            User Type: $(ref:userType)
+            $(if:ref:hasSoDConflicts)SoD Conflicts Detected: $(ref:sodConflicts)$(endif)
+          </Description>
+          <Display name="Role Assignment Approval" value="User: $(ref:identityName), Role: $(ref:roleId)"/>
+          <Form>
+            <Attributes>
+              <Map>
+                <entry key="identityName" value="ref:identityName"/>
+                <entry key="roleId" value="ref:roleId"/>
+                <entry key="operation" value="ref:operation"/>
+                <entry key="roleType" value="ref:roleType"/>
+                <entry key="sodConflicts" value="ref:sodConflicts"/>
+              </Map>
+            </Attributes>
+            <Button action="approve" label="Approve"/>
+            <Button action="reject" label="Reject"/>
+          </Form>
+        </WorkItem>
+      </Arg>
+    </Approval>
+    <Transition to="Process Approval Decision"/>
+  </Step>
+  
+  <Step action="call:processApprovalDecision" icon="Task" name="Process Approval Decision" posX="725" posY="10">
+    <Description>Process the approval decision</Description>
+    <Arg name="workflowId" value="ref:workflowId"/>
+    <Arg name="approvalSet" value="ref:approvalSet"/>
+    <Transition to="Execute Role Operation" when="ref:allApproved"/>
+    <Transition to="Reject Request" when="!ref:allApproved"/>
+  </Step>
+  
+  <Step action="call:executeRoleOperation" icon="Task" name="Execute Role Operation" posX="825" posY="10" resultVariable="operationResult">
+    <Description>Execute the role assignment or removal in RACF system</Description>
+    <Arg name="identityName" value="ref:identityName"/>
+    <Arg name="roleId" value="ref:roleId"/>
+    <Arg name="operation" value="ref:operation"/>
+    <Transition to="Operation Success" when="ref:operationSuccess"/>
+    <Transition to="Operation Failed" when="!ref:operationSuccess"/>
+  </Step>
+  
+  <Step icon="Task" name="Operation Success" posX="925" posY="10">
+    <Description>Handle successful role operation</Description>
+    <Script>
+      <Source>
+        // Log successful operation
+        log.info("RACF role " + operation + " completed successfully for user: " + identityName + ", role: " + roleId);
+        
+        // Send notification to requestor
+        sailpoint.tools.Util.sendNotification(context, 
+            "Role " + operation + " Successful", 
+            "Role " + operation + " for user " + identityName + " and role " + roleId + " has been completed successfully.",
+            identityName);
+      </Source>
+    </Script>
+    <Transition to="End"/>
+  </Step>
+  
+  <Step icon="Task" name="Operation Failed" posX="925" posY="110">
+    <Description>Handle failed role operation</Description>
+    <Script>
+      <Source>
+        // Log operation failure
+        log.error("RACF role " + operation + " failed for user: " + identityName + ", role: " + roleId);
+        
+        // Send notification to requestor
+        sailpoint.tools.Util.sendNotification(context, 
+            "Role " + operation + " Failed", 
+            "Role " + operation + " for user " + identityName + " and role " + roleId + " has failed.",
+            identityName);
+      </Source>
+    </Script>
+    <Transition to="End"/>
+  </Step>
+  
+  <Step icon="Task" name="Reject Request" posX="725" posY="110">
+    <Description>Handle rejected role assignment request</Description>
+    <Script>
+      <Source>
+        // Log request rejection
+        log.info("RACF role " + operation + " request rejected for user: " + identityName + ", role: " + roleId);
+        
+        // Send notification to requestor
+        sailpoint.tools.Util.sendNotification(context, 
+            "Role " + operation + " Request Rejected", 
+            "Role " + operation + " request for user " + identityName + " and role " + roleId + " has been rejected.",
+            identityName);
+      </Source>
+    </Script>
+    <Transition to="End"/>
+  </Step>
+  
+  <Step icon="Task" name="SoD Rejection" posX="325" posY="210">
+    <Description>Handle automatic rejection due to SoD conflicts</Description>
+    <Script>
+      <Source>
+        // Log SoD rejection
+        log.warn("RACF role assignment automatically rejected due to high-risk SoD conflicts for user: " + identityName + ", role: " + roleId);
+      </Source>
+    </Script>
+    <Transition to="End"/>
+  </Step>
+  
+  <Step icon="Stop" name="End" posX="1025" posY="60"/>
+  
+</Workflow>

@@ -1,0 +1,239 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<!DOCTYPE Rule PUBLIC "sailpoint.dtd" "sailpoint.dtd">
+<Rule language="beanshell" name="Accessio RACF After Provisioning Rule" type="AfterProvisioning">
+  
+  <Description>
+    After provisioning rule for Accessio RACF application.
+    Performs post-processing, notifications, and cleanup after provisioning operations.
+  </Description>
+  
+  <Source>
+    import sailpoint.object.*;
+    import sailpoint.object.ProvisioningPlan.*;
+    import sailpoint.api.SailPointContext;
+    import sailpoint.connector.Connector;
+    import com.sailpoint.connector.accessio.racf.*;
+    import java.util.*;
+    import org.apache.log4j.Logger;
+    
+    Logger log = Logger.getLogger("com.sailpoint.connector.accessio.racf.AfterProvisioningRule");
+    
+    try {
+        log.info("Executing After Provisioning Rule for identity: " + identity.getName());
+        
+        // Get the RACF application and connector
+        Application racfApp = context.getObjectByName(Application.class, "Accessio RACF");
+        Connector connector = sailpoint.connector.ConnectorFactory.getConnector(racfApp, null);
+        
+        if (result != null && result.getStatus() == ProvisioningResult.STATUS_COMMITTED) {
+            
+            // 1. Process Successful Provisioning Results
+            log.info("Provisioning completed successfully for " + identity.getName());
+            
+            if (plan != null && plan.getAccountRequests() != null) {
+                for (AccountRequest accountRequest : plan.getAccountRequests()) {
+                    
+                    String operation = accountRequest.getOperation().toString();
+                    String userType = null;
+                    
+                    AttributeRequest userTypeReq = accountRequest.getAttributeRequest("userType");
+                    if (userTypeReq != null) {
+                        userType = (String) userTypeReq.getValue();
+                    }
+                    
+                    // 2. Update Identity Attributes
+                    if (accountRequest.getOperation() == AccountRequest.Operation.Create) {
+                        
+                        // Set account creation date on identity
+                        identity.setAttribute("racfAccountCreated", new Date());
+                        identity.setAttribute("racfUserType", userType);
+                        
+                        log.info("Created RACF account for " + identity.getName() + " with user type: " + userType);
+                        
+                        // Send welcome notification
+                        try {
+                            ApprovalWorkflowHandler approvalHandler = connector.getApprovalWorkflowHandler();
+                            approvalHandler.sendNotification(
+                                identity.getEmail(),
+                                "RACF Account Created",
+                                "Your RACF account has been successfully created. User Type: " + userType,
+                                "INFO"
+                            );
+                        } catch (Exception e) {
+                            log.warn("Could not send welcome notification: " + e.getMessage());
+                        }
+                    }
+                    
+                    // 3. Handle Role Assignment Results
+                    AttributeRequest rolesReq = accountRequest.getAttributeRequest("roles");
+                    if (rolesReq != null && rolesReq.getValue() != null) {
+                        
+                        List assignedRoles = (List) rolesReq.getValue();
+                        
+                        try {
+                            RACFRoleManager roleManager = connector.getRoleManager();
+                            
+                            // Update role assignment timestamps
+                            for (Object role : assignedRoles) {
+                                String roleId = role.toString();
+                                String roleType = roleManager.getRoleType(roleId);
+                                
+                                // Set recertification schedule based on role type
+                                if ("Guardian".equals(roleType) || "Monitor".equals(roleType)) {
+                                    // Guardian/Monitor roles need recertification every 30 days
+                                    Calendar nextRecert = Calendar.getInstance();
+                                    nextRecert.add(Calendar.DAY_OF_MONTH, 30);
+                                    identity.setAttribute("racfNextRecertification", nextRecert.getTime());
+                                    
+                                } else if ("High-Privilege".equals(roleType)) {
+                                    // High-privilege roles need recertification every 60 days
+                                    Calendar nextRecert = Calendar.getInstance();
+                                    nextRecert.add(Calendar.DAY_OF_MONTH, 60);
+                                    identity.setAttribute("racfNextRecertification", nextRecert.getTime());
+                                    
+                                } else {
+                                    // Standard roles need recertification every 90 days
+                                    Calendar nextRecert = Calendar.getInstance();
+                                    nextRecert.add(Calendar.DAY_OF_MONTH, 90);
+                                    identity.setAttribute("racfNextRecertification", nextRecert.getTime());
+                                }
+                                
+                                log.info("Assigned role " + roleId + " (" + roleType + ") to " + identity.getName());
+                            }
+                            
+                            // Send role assignment notification
+                            if (!assignedRoles.isEmpty()) {
+                                try {
+                                    ApprovalWorkflowHandler approvalHandler = connector.getApprovalWorkflowHandler();
+                                    approvalHandler.sendNotification(
+                                        identity.getEmail(),
+                                        "RACF Roles Assigned",
+                                        "The following roles have been assigned to your account: " + assignedRoles,
+                                        "INFO"
+                                    );
+                                } catch (Exception e) {
+                                    log.warn("Could not send role assignment notification: " + e.getMessage());
+                                }
+                            }
+                            
+                        } catch (Exception e) {
+                            log.warn("Could not process role assignments: " + e.getMessage());
+                        }
+                    }
+                    
+                    // 4. Handle Deletion Results
+                    if (accountRequest.getOperation() == AccountRequest.Operation.Delete) {
+                        
+                        // Clear RACF-related identity attributes
+                        identity.removeAttribute("racfAccountCreated");
+                        identity.removeAttribute("racfUserType");
+                        identity.removeAttribute("racfNextRecertification");
+                        
+                        log.info("Deleted RACF account for " + identity.getName());
+                        
+                        // Send deletion notification
+                        try {
+                            ApprovalWorkflowHandler approvalHandler = connector.getApprovalWorkflowHandler();
+                            approvalHandler.sendNotification(
+                                identity.getEmail(),
+                                "RACF Account Deleted",
+                                "Your RACF account has been deleted and all associated roles have been removed.",
+                                "WARNING"
+                            );
+                        } catch (Exception e) {
+                            log.warn("Could not send deletion notification: " + e.getMessage());
+                        }
+                    }
+                    
+                    // 5. Update Last Modification Timestamp
+                    identity.setAttribute("racfLastModified", new Date());
+                    
+                    // 6. Audit Logging
+                    try {
+                        Map auditData = new HashMap();
+                        auditData.put("identity", identity.getName());
+                        auditData.put("operation", operation);
+                        auditData.put("userType", userType);
+                        auditData.put("timestamp", new Date());
+                        auditData.put("status", "SUCCESS");
+                        
+                        // Log to audit system
+                        log.info("AUDIT: " + auditData);
+                        
+                    } catch (Exception e) {
+                        log.warn("Could not write audit log: " + e.getMessage());
+                    }
+                }
+            }
+            
+            // 7. Save Identity Changes
+            try {
+                context.saveObject(identity);
+                context.commitTransaction();
+                log.info("Identity attributes updated successfully for " + identity.getName());
+            } catch (Exception e) {
+                log.error("Could not save identity changes: " + e.getMessage());
+            }
+            
+        } else if (result != null && result.getStatus() == ProvisioningResult.STATUS_FAILED) {
+            
+            // 8. Handle Failed Provisioning
+            log.error("Provisioning failed for " + identity.getName() + ": " + result.getErrors());
+            
+            // Send failure notification
+            try {
+                Application racfApp = context.getObjectByName(Application.class, "Accessio RACF");
+                Connector connector = sailpoint.connector.ConnectorFactory.getConnector(racfApp, null);
+                ApprovalWorkflowHandler approvalHandler = connector.getApprovalWorkflowHandler();
+                
+                String errorMessage = "Provisioning operation failed. Please contact your administrator.";
+                if (result.getErrors() != null && !result.getErrors().isEmpty()) {
+                    errorMessage += " Error: " + result.getErrors().get(0);
+                }
+                
+                approvalHandler.sendNotification(
+                    identity.getEmail(),
+                    "RACF Provisioning Failed",
+                    errorMessage,
+                    "ERROR"
+                );
+                
+                // Notify administrators
+                approvalHandler.sendNotification(
+                    "sailpoint-admins@accessio.com",
+                    "RACF Provisioning Failure",
+                    "Provisioning failed for user " + identity.getName() + ": " + result.getErrors(),
+                    "ERROR"
+                );
+                
+            } catch (Exception e) {
+                log.warn("Could not send failure notification: " + e.getMessage());
+            }
+            
+            // Audit failed operation
+            try {
+                Map auditData = new HashMap();
+                auditData.put("identity", identity.getName());
+                auditData.put("operation", "PROVISIONING");
+                auditData.put("timestamp", new Date());
+                auditData.put("status", "FAILED");
+                auditData.put("errors", result.getErrors());
+                
+                log.error("AUDIT: " + auditData);
+                
+            } catch (Exception e) {
+                log.warn("Could not write audit log: " + e.getMessage());
+            }
+        }
+        
+        log.info("After provisioning processing completed for " + identity.getName());
+        
+    } catch (Exception e) {
+        log.error("Error in After Provisioning Rule: " + e.getMessage(), e);
+        // Don't throw exception to avoid breaking the provisioning flow
+    }
+    
+    return result;
+  </Source>
+  
+</Rule>

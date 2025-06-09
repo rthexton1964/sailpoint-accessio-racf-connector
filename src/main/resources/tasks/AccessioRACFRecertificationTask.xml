@@ -1,0 +1,179 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<!DOCTYPE TaskDefinition PUBLIC "sailpoint.dtd" "sailpoint.dtd">
+<TaskDefinition executor="sailpoint.task.CertificationGenerationTaskExecutor" 
+                name="Accessio RACF Recertification" 
+                progressMode="String" 
+                resultAction="Rename" 
+                subType="task_item_type_certification" 
+                template="true" 
+                type="Certification">
+                
+  <Description>
+    Recertification task for Accessio RACF application.
+    Generates certification campaigns for user-role assignments based on role types and risk levels.
+  </Description>
+  
+  <Signature>
+    <Inputs>
+      <Argument name="certificationName" type="string" required="true">
+        <Description>Name of the certification campaign</Description>
+      </Argument>
+      <Argument name="certificationDefinition" type="CertificationDefinition" required="true">
+        <Description>Certification definition to use</Description>
+      </Argument>
+      <Argument name="applications" type="Application" multi="true">
+        <Description>Applications to include in certification</Description>
+      </Argument>
+      <Argument name="certificationOwner" type="Identity" required="true">
+        <Description>Owner of the certification campaign</Description>
+      </Argument>
+      <Argument name="scheduleEnabled" type="boolean">
+        <Description>Enable automatic scheduling</Description>
+      </Argument>
+      <Argument name="notificationEnabled" type="boolean">
+        <Description>Enable notifications</Description>
+      </Argument>
+    </Inputs>
+    <Returns>
+      <Argument name="taskResult" type="TaskResult">
+        <Description>Task execution result</Description>
+      </Argument>
+    </Returns>
+  </Signature>
+  
+  <Attributes>
+    <Map>
+      <!-- Campaign Configuration -->
+      <entry key="certificationName" value="Accessio RACF Quarterly Recertification"/>
+      <entry key="applications">
+        <List>
+          <Reference class="sailpoint.object.Application" name="Accessio RACF"/>
+        </List>
+      </entry>
+      <entry key="certificationOwner">
+        <Reference class="sailpoint.object.Identity" name="spadmin"/>
+      </entry>
+      
+      <!-- Campaign Types -->
+      <entry key="campaignTypes">
+        <List>
+          <String>Periodic</String>
+          <String>Guardian</String>
+          <String>Monitor</String>
+          <String>High-Privilege</String>
+        </List>
+      </entry>
+      
+      <!-- Periodic Recertification (Standard Roles) -->
+      <entry key="periodicRecertification">
+        <Map>
+          <entry key="enabled" value="true"/>
+          <entry key="frequency" value="90"/> <!-- days -->
+          <entry key="roleFilter" value="roleType != 'Guardian' AND roleType != 'Monitor' AND roleType != 'High-Privilege'"/>
+          <entry key="approvers" value="manager,orgOwner"/>
+          <entry key="deadline" value="14"/> <!-- days -->
+          <entry key="escalationDays" value="7"/>
+          <entry key="autoRevoke" value="true"/>
+          <entry key="autoRevokeDelay" value="3"/> <!-- days after deadline -->
+        </Map>
+      </entry>
+      
+      <!-- Guardian Role Recertification -->
+      <entry key="guardianRecertification">
+        <Map>
+          <entry key="enabled" value="true"/>
+          <entry key="frequency" value="30"/> <!-- days -->
+          <entry key="roleFilter" value="roleType == 'Guardian'"/>
+          <entry key="approvers" value="securityOfficer,manager"/>
+          <entry key="deadline" value="7"/> <!-- days -->
+          <entry key="escalationDays" value="3"/>
+          <entry key="autoRevoke" value="true"/>
+          <entry key="autoRevokeDelay" value="1"/> <!-- days after deadline -->
+          <entry key="requireJustification" value="true"/>
+        </Map>
+      </entry>
+      
+      <!-- Monitor Role Recertification -->
+      <entry key="monitorRecertification">
+        <Map>
+          <entry key="enabled" value="true"/>
+          <entry key="frequency" value="30"/> <!-- days -->
+          <entry key="roleFilter" value="roleType == 'Monitor'"/>
+          <entry key="approvers" value="securityOfficer,manager"/>
+          <entry key="deadline" value="7"/> <!-- days -->
+          <entry key="escalationDays" value="3"/>
+          <entry key="autoRevoke" value="true"/>
+          <entry key="autoRevokeDelay" value="1"/> <!-- days after deadline -->
+          <entry key="requireJustification" value="true"/>
+        </Map>
+      </entry>
+      
+      <!-- High-Privilege Role Recertification -->
+      <entry key="highPrivilegeRecertification">
+        <Map>
+          <entry key="enabled" value="true"/>
+          <entry key="frequency" value="60"/> <!-- days -->
+          <entry key="roleFilter" value="roleType == 'High-Privilege'"/>
+          <entry key="approvers" value="manager,orgOwner,securityOfficer"/>
+          <entry key="deadline" value="10"/> <!-- days -->
+          <entry key="escalationDays" value="5"/>
+          <entry key="autoRevoke" value="true"/>
+          <entry key="autoRevokeDelay" value="2"/> <!-- days after deadline -->
+          <entry key="requireJustification" value="true"/>
+        </Map>
+      </entry>
+      
+      <!-- Notification Configuration -->
+      <entry key="notificationEnabled" value="true"/>
+      <entry key="notifications">
+        <Map>
+          <entry key="campaignStart" value="true"/>
+          <entry key="reminderDays" value="7,3,1"/>
+          <entry key="escalation" value="true"/>
+          <entry key="completion" value="true"/>
+          <entry key="autoRevocation" value="true"/>
+        </Map>
+      </entry>
+      
+      <!-- Scheduling Configuration -->
+      <entry key="scheduleEnabled" value="true"/>
+      <entry key="schedulingRules">
+        <Map>
+          <entry key="periodicCron" value="0 0 1 1 */3 ?"/> <!-- Quarterly -->
+          <entry key="guardianCron" value="0 0 1 */1 * ?"/> <!-- Monthly -->
+          <entry key="monitorCron" value="0 0 1 */1 * ?"/> <!-- Monthly -->
+          <entry key="highPrivilegeCron" value="0 0 1 1 */2 ?"/> <!-- Bi-monthly -->
+        </Map>
+      </entry>
+      
+      <!-- Compliance Configuration -->
+      <entry key="complianceEnabled" value="true"/>
+      <entry key="complianceSettings">
+        <Map>
+          <entry key="generateReports" value="true"/>
+          <entry key="reportFormats" value="PDF,CSV"/>
+          <entry key="reportRecipients" value="compliance@accessio.com,audit@accessio.com"/>
+          <entry key="retentionDays" value="2555"/> <!-- 7 years -->
+          <entry key="auditTrail" value="true"/>
+        </Map>
+      </entry>
+      
+      <!-- Performance Settings -->
+      <entry key="batchSize" value="50"/>
+      <entry key="threadPoolSize" value="3"/>
+      <entry key="timeoutMinutes" value="120"/>
+      
+      <!-- Error Handling -->
+      <entry key="continueOnError" value="true"/>
+      <entry key="maxErrors" value="25"/>
+      <entry key="errorNotificationEnabled" value="true"/>
+      <entry key="errorNotificationRecipients" value="sailpoint-admins@accessio.com"/>
+      
+      <!-- Audit and Logging -->
+      <entry key="auditEnabled" value="true"/>
+      <entry key="detailedLogging" value="true"/>
+      <entry key="logLevel" value="INFO"/>
+    </Map>
+  </Attributes>
+  
+</TaskDefinition>

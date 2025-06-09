@@ -1,0 +1,238 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<!DOCTYPE Rule PUBLIC "sailpoint.dtd" "sailpoint.dtd">
+<Rule language="beanshell" name="Accessio RACF Field Value Rule" type="FieldValue">
+  
+  <Description>
+    Field value rule for Accessio RACF application.
+    Dynamically populates field values based on identity attributes and business logic.
+  </Description>
+  
+  <Source>
+    import sailpoint.object.*;
+    import sailpoint.api.SailPointContext;
+    import java.util.*;
+    import java.text.SimpleDateFormat;
+    import org.apache.log4j.Logger;
+    
+    Logger log = Logger.getLogger("com.sailpoint.connector.accessio.racf.FieldValueRule");
+    
+    try {
+        log.debug("Executing Field Value Rule for field: " + field + ", identity: " + identity.getName());
+        
+        Object value = null;
+        
+        // Handle different field types
+        if ("BASEUS_SAM_ID".equals(field)) {
+            // Generate SAM ID based on identity name
+            value = identity.getName();
+            if (value != null && value.toString().length() > 32) {
+                value = value.toString().substring(0, 32);
+            }
+            
+        } else if ("BASEUS_FIRST_NAME".equals(field)) {
+            // Get first name from identity
+            value = identity.getFirstname();
+            
+        } else if ("BASEUS_LAST_NAME".equals(field)) {
+            // Get last name from identity
+            value = identity.getLastname();
+            
+        } else if ("BASEUS_EMAIL".equals(field)) {
+            // Get email from identity
+            value = identity.getEmail();
+            
+        } else if ("userType".equals(field)) {
+            // Determine user type based on identity attributes
+            String department = identity.getAttribute("department");
+            String jobTitle = identity.getAttribute("title");
+            String employeeType = identity.getAttribute("employeeType");
+            
+            if ("Service Account".equals(employeeType)) {
+                value = "STC";
+            } else if ("Technical".equals(department) || 
+                      (jobTitle != null && (jobTitle.contains("Developer") || 
+                                           jobTitle.contains("Engineer") || 
+                                           jobTitle.contains("Architect")))) {
+                value = "Technical";
+            } else {
+                value = "AARID"; // Default
+            }
+            
+        } else if ("BASEORG_ID".equals(field)) {
+            // Map organization from identity attributes
+            String department = identity.getAttribute("department");
+            String costCenter = identity.getAttribute("costCenter");
+            
+            if (costCenter != null && !costCenter.isEmpty()) {
+                value = "ORG_" + costCenter;
+            } else if (department != null && !department.isEmpty()) {
+                value = "ORG_" + department.toUpperCase().replaceAll("\\s+", "_");
+            } else {
+                value = "ORG_DEFAULT";
+            }
+            
+        } else if ("BASEUS_C_C01_001".equals(field)) {
+            // AMR4V Type mapping
+            String userType = identity.getAttribute("userType");
+            if (userType == null) {
+                // Determine user type if not set
+                String employeeType = identity.getAttribute("employeeType");
+                if ("Service Account".equals(employeeType)) {
+                    userType = "STC";
+                } else {
+                    userType = "AARID";
+                }
+            }
+            
+            switch (userType) {
+                case "AARID":
+                    value = "AMR4V_USER";
+                    break;
+                case "STC":
+                    value = "AMR4V_SERVICE";
+                    break;
+                case "Technical":
+                    value = "AMR4V_TECH";
+                    break;
+                default:
+                    value = "AMR4V_USER";
+            }
+            
+        } else if ("enabled".equals(field)) {
+            // Account status based on identity status
+            String status = identity.getAttribute("status");
+            if ("Active".equals(status) || status == null) {
+                value = true;
+            } else {
+                value = false;
+            }
+            
+        } else if ("created".equals(field)) {
+            // Set creation timestamp
+            value = new Date();
+            
+        } else if ("lastModified".equals(field)) {
+            // Set modification timestamp
+            value = new Date();
+            
+        } else if ("BASEORG_C_C32_05".equals(field)) {
+            // Organization unit owner
+            String manager = identity.getAttribute("manager");
+            if (manager != null) {
+                // Try to get manager's identity
+                try {
+                    Identity managerIdentity = context.getObjectByName(Identity.class, manager);
+                    if (managerIdentity != null) {
+                        value = managerIdentity.getName();
+                    } else {
+                        value = manager;
+                    }
+                } catch (Exception e) {
+                    value = manager;
+                }
+            } else {
+                // Default org owner based on department
+                String department = identity.getAttribute("department");
+                if ("IT".equals(department)) {
+                    value = "it-manager";
+                } else if ("HR".equals(department)) {
+                    value = "hr-manager";
+                } else if ("Finance".equals(department)) {
+                    value = "finance-manager";
+                } else {
+                    value = "default-manager";
+                }
+            }
+            
+        } else if ("BASEORG_C_C78_01".equals(field)) {
+            // Organization unit deputy
+            String deputy = identity.getAttribute("deputy");
+            if (deputy == null) {
+                // Default deputy based on department
+                String department = identity.getAttribute("department");
+                if ("IT".equals(department)) {
+                    value = "it-deputy";
+                } else if ("HR".equals(department)) {
+                    value = "hr-deputy";
+                } else if ("Finance".equals(department)) {
+                    value = "finance-deputy";
+                } else {
+                    value = "default-deputy";
+                }
+            } else {
+                value = deputy;
+            }
+            
+        } else if ("BASEORG_EMAIL".equals(field)) {
+            // Organization unit email
+            String department = identity.getAttribute("department");
+            if (department != null) {
+                value = department.toLowerCase().replaceAll("\\s+", "") + "@accessio.com";
+            } else {
+                value = "general@accessio.com";
+            }
+            
+        } else if (field != null && field.startsWith("roles")) {
+            // Handle role assignments based on identity attributes
+            List roles = new ArrayList();
+            
+            String department = identity.getAttribute("department");
+            String jobTitle = identity.getAttribute("title");
+            String userType = identity.getAttribute("userType");
+            
+            // Add default roles based on user type
+            if ("AARID".equals(userType)) {
+                roles.add("RACF_USER_BASIC");
+                
+                // Add department-specific roles
+                if ("IT".equals(department)) {
+                    roles.add("RACF_IT_USER");
+                } else if ("HR".equals(department)) {
+                    roles.add("RACF_HR_USER");
+                } else if ("Finance".equals(department)) {
+                    roles.add("RACF_FINANCE_USER");
+                }
+                
+                // Add job title-specific roles
+                if (jobTitle != null) {
+                    if (jobTitle.contains("Manager")) {
+                        roles.add("RACF_MANAGER");
+                    } else if (jobTitle.contains("Director")) {
+                        roles.add("RACF_DIRECTOR");
+                    }
+                }
+                
+            } else if ("STC".equals(userType)) {
+                roles.add("RACF_SERVICE_ACCOUNT");
+                
+            } else if ("Technical".equals(userType)) {
+                roles.add("RACF_TECHNICAL_USER");
+                
+                if (jobTitle != null) {
+                    if (jobTitle.contains("Security")) {
+                        roles.add("RACF_SECURITY_ADMIN");
+                    } else if (jobTitle.contains("System")) {
+                        roles.add("RACF_SYSTEM_ADMIN");
+                    }
+                }
+            }
+            
+            value = roles;
+        }
+        
+        // Log the computed value
+        if (value != null) {
+            log.debug("Computed value for field " + field + ": " + value);
+        } else {
+            log.debug("No value computed for field " + field);
+        }
+        
+        return value;
+        
+    } catch (Exception e) {
+        log.error("Error in Field Value Rule for field " + field + ": " + e.getMessage(), e);
+        return null;
+    }
+  </Source>
+  
+</Rule>

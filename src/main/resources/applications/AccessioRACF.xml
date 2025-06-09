@@ -1,0 +1,219 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<!DOCTYPE Application PUBLIC "sailpoint.dtd" "sailpoint.dtd">
+<Application connector="com.sailpoint.connector.accessio.racf.AccessioRACFConnector" 
+             featuresString="PROVISIONING, SYNC_PROVISIONING, ACCOUNT_ONLY_REQUEST, SEARCH, DISCOVER_SCHEMA" 
+             name="Accessio RACF" type="RACF">
+             
+  <Description>
+    SailPoint IIQ Application definition for Accessio RACF connector.
+    Provides user lifecycle management, role assignments, and compliance features.
+  </Description>
+  
+  <Attributes>
+    <Map>
+      <!-- Connection Configuration -->
+      <entry key="garancyEndpoint" value="https://garancy.accessio.com/api/soap"/>
+      <entry key="garancyUsername" value="sailpoint_service"/>
+      <entry key="garancyPassword" value="encrypted:${garancy.password}"/>
+      <entry key="garancyTimeout" value="30000"/>
+      <entry key="garancyRetryAttempts" value="3"/>
+      <entry key="garancyRetryDelay" value="5000"/>
+      
+      <!-- Connector Configuration -->
+      <entry key="connectorClass" value="com.sailpoint.connector.accessio.racf.AccessioRACFConnector"/>
+      <entry key="pageSize" value="100"/>
+      <entry key="searchPageSize" value="50"/>
+      <entry key="maxConnections" value="10"/>
+      <entry key="connectionTimeout" value="60000"/>
+      
+      <!-- Workflow Configuration -->
+      <entry key="userCreationWorkflow" value="Accessio RACF User Creation Workflow"/>
+      <entry key="userModificationWorkflow" value="Accessio RACF User Modification Workflow"/>
+      <entry key="userDeletionWorkflow" value="Accessio RACF User Deletion Workflow"/>
+      <entry key="roleAssignmentWorkflow" value="Accessio RACF Role Assignment Workflow"/>
+      
+      <!-- Approval Configuration -->
+      <entry key="approvalRequired" value="true"/>
+      <entry key="approvalMode" value="serial"/>
+      <entry key="approvalTimeout" value="7"/>
+      <entry key="approvalTimeoutUnit" value="days"/>
+      <entry key="escalationEnabled" value="true"/>
+      <entry key="escalationTimeout" value="3"/>
+      
+      <!-- User Type Configuration -->
+      <entry key="supportedUserTypes">
+        <List>
+          <String>AARID</String>
+          <String>STC</String>
+          <String>Technical</String>
+        </List>
+      </entry>
+      
+      <!-- Role Type Configuration -->
+      <entry key="specialRoleTypes">
+        <List>
+          <String>Guardian</String>
+          <String>Monitor</String>
+          <String>High-Privilege</String>
+        </List>
+      </entry>
+      
+      <!-- SoD Configuration -->
+      <entry key="sodValidationEnabled" value="true"/>
+      <entry key="sodConflictAction" value="REJECT"/>
+      <entry key="sodHighRiskAutoReject" value="true"/>
+      
+      <!-- Recertification Configuration -->
+      <entry key="recertificationEnabled" value="true"/>
+      <entry key="periodicRecertificationDays" value="90"/>
+      <entry key="guardianRecertificationDays" value="30"/>
+      <entry key="monitorRecertificationDays" value="30"/>
+      <entry key="highPrivilegeRecertificationDays" value="60"/>
+      
+      <!-- Audit Configuration -->
+      <entry key="auditEnabled" value="true"/>
+      <entry key="auditLevel" value="INFO"/>
+      <entry key="auditRetentionDays" value="365"/>
+      
+      <!-- Performance Configuration -->
+      <entry key="batchSize" value="50"/>
+      <entry key="threadPoolSize" value="5"/>
+      <entry key="cacheEnabled" value="true"/>
+      <entry key="cacheExpirationMinutes" value="30"/>
+      
+      <!-- Error Handling -->
+      <entry key="errorRetryAttempts" value="3"/>
+      <entry key="errorRetryDelay" value="1000"/>
+      <entry key="errorNotificationEnabled" value="true"/>
+      <entry key="errorNotificationRecipients" value="sailpoint-admins@accessio.com"/>
+    </Map>
+  </Attributes>
+  
+  <!-- Account Schema -->
+  <Schemas>
+    <Schema displayAttribute="BASEUS_SAM_ID" identityAttribute="BASEUS_SAM_ID" 
+            instanceAttribute="BASEUS_SAM_ID" nativeObjectType="account" 
+            objectType="account">
+            
+      <AttributeDefinition name="BASEUS_SAM_ID" type="string" required="true">
+        <Description>User ID (SAM Account Name)</Description>
+      </AttributeDefinition>
+      
+      <AttributeDefinition name="BASEUS_FIRST_NAME" type="string">
+        <Description>First Name</Description>
+      </AttributeDefinition>
+      
+      <AttributeDefinition name="BASEUS_LAST_NAME" type="string">
+        <Description>Last Name</Description>
+      </AttributeDefinition>
+      
+      <AttributeDefinition name="BASEUS_EMAIL" type="string">
+        <Description>Email Address</Description>
+      </AttributeDefinition>
+      
+      <AttributeDefinition name="BASEUS_C_C01_001" type="string">
+        <Description>AMR4V Type</Description>
+      </AttributeDefinition>
+      
+      <AttributeDefinition name="BASEORG_ID" type="string">
+        <Description>Organization Unit ID</Description>
+      </AttributeDefinition>
+      
+      <AttributeDefinition name="BASEORG_C_C32_05" type="string">
+        <Description>Organization Unit Owner</Description>
+      </AttributeDefinition>
+      
+      <AttributeDefinition name="BASEORG_C_C78_01" type="string">
+        <Description>Organization Unit Deputy</Description>
+      </AttributeDefinition>
+      
+      <AttributeDefinition name="BASEORG_EMAIL" type="string">
+        <Description>Organization Unit Email</Description>
+      </AttributeDefinition>
+      
+      <AttributeDefinition name="userType" type="string">
+        <Description>User Type (AARID, STC, Technical)</Description>
+      </AttributeDefinition>
+      
+      <AttributeDefinition name="enabled" type="boolean">
+        <Description>Account Status</Description>
+      </AttributeDefinition>
+      
+      <AttributeDefinition name="created" type="date">
+        <Description>Account Creation Date</Description>
+      </AttributeDefinition>
+      
+      <AttributeDefinition name="lastModified" type="date">
+        <Description>Last Modification Date</Description>
+      </AttributeDefinition>
+      
+      <AttributeDefinition name="roles" type="string" multi="true" entitlement="true">
+        <Description>Assigned Roles</Description>
+      </AttributeDefinition>
+      
+    </Schema>
+    
+    <!-- Group/Role Schema -->
+    <Schema displayAttribute="BASEUSRC_ROLE" identityAttribute="BASEUSRC_ROLE" 
+            instanceAttribute="BASEUSRC_ROLE" nativeObjectType="group" 
+            objectType="group">
+            
+      <AttributeDefinition name="BASEUSRC_ROLE" type="string" required="true">
+        <Description>Role ID</Description>
+      </AttributeDefinition>
+      
+      <AttributeDefinition name="TECHDSP_NAME" type="string">
+        <Description>Role Title/Display Name</Description>
+      </AttributeDefinition>
+      
+      <AttributeDefinition name="roleType" type="string">
+        <Description>Role Type (Guardian, Monitor, High-Privilege, Standard)</Description>
+      </AttributeDefinition>
+      
+      <AttributeDefinition name="roleOwner" type="string">
+        <Description>Role Owner</Description>
+      </AttributeDefinition>
+      
+      <AttributeDefinition name="roleDescription" type="string">
+        <Description>Role Description</Description>
+      </AttributeDefinition>
+      
+      <AttributeDefinition name="members" type="string" multi="true">
+        <Description>Role Members</Description>
+      </AttributeDefinition>
+      
+    </Schema>
+  </Schemas>
+  
+  <!-- Provisioning Configuration -->
+  <ProvisioningConfig>
+    <PlanInitializerScript>
+      <Source>
+        import sailpoint.object.ProvisioningPlan;
+        import sailpoint.object.ProvisioningPlan.AccountRequest;
+        import sailpoint.object.ProvisioningPlan.AttributeRequest;
+        
+        // Initialize provisioning plan with required attributes
+        if (plan != null) {
+            for (AccountRequest accountRequest : plan.getAccountRequests()) {
+                // Set default user type if not specified
+                if (accountRequest.getAttributeRequest("userType") == null) {
+                    accountRequest.add(new AttributeRequest("userType", "AARID"));
+                }
+                
+                // Set creation timestamp
+                if (accountRequest.getOperation() == AccountRequest.Operation.Create) {
+                    accountRequest.add(new AttributeRequest("created", new Date()));
+                }
+                
+                // Set modification timestamp
+                accountRequest.add(new AttributeRequest("lastModified", new Date()));
+            }
+        }
+        
+        return plan;
+      </Source>
+    </PlanInitializerScript>
+  </ProvisioningConfig>
+  
+</Application>

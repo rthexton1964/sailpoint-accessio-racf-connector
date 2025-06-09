@@ -1,0 +1,338 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<!DOCTYPE Workflow PUBLIC "sailpoint.dtd" "sailpoint.dtd">
+<Workflow explicitTransitions="true" libraries="Identity,IdentityRequest" name="Accessio RACF User Deletion Workflow" type="IdentityLifecycle">
+  
+  <Description>
+    Workflow for deleting RACF users in Accessio system with appropriate approval and cleanup.
+    Handles role removal, access revocation, and audit logging.
+  </Description>
+  
+  <Variable input="true" name="identityName" required="true">
+    <Description>Name of the identity being deleted</Description>
+  </Variable>
+  
+  <Variable input="true" name="plan" required="true">
+    <Description>Provisioning plan for the identity deletion</Description>
+  </Variable>
+  
+  <Variable input="true" name="deletionReason">
+    <Description>Reason for user deletion</Description>
+  </Variable>
+  
+  <Variable name="userType">
+    <Description>Type of user: AARID, STC, or Technical</Description>
+  </Variable>
+  
+  <Variable name="orgUnitId">
+    <Description>Organization unit ID of the user</Description>
+  </Variable>
+  
+  <Variable name="orgUnitOwner">
+    <Description>Organization unit owner</Description>
+  </Variable>
+  
+  <Variable name="currentRoles">
+    <Description>List of current roles assigned to the user</Description>
+  </Variable>
+  
+  <Variable name="approvers">
+    <Description>List of approvers for this request</Description>
+  </Variable>
+  
+  <Variable name="workflowId">
+    <Description>Workflow instance ID for tracking</Description>
+  </Variable>
+  
+  <Step icon="Start" name="Start" posX="25" posY="10">
+    <Transition to="Initialize Deletion Request"/>
+  </Step>
+  
+  <Step action="call:initializeDeletionRequest" icon="Task" name="Initialize Deletion Request" posX="125" posY="10" resultVariable="requestData">
+    <Description>Initialize the user deletion request and gather user information</Description>
+    <Arg name="identityName" value="ref:identityName"/>
+    <Arg name="deletionReason" value="ref:deletionReason"/>
+    <Script>
+      <Source>
+        import sailpoint.object.Identity;
+        import sailpoint.object.Application;
+        import sailpoint.connector.Connector;
+        import com.sailpoint.connector.accessio.racf.RACFUserManager;
+        import java.util.*;
+        
+        // Get the RACF application and connector
+        Application racfApp = context.getObjectByName(Application.class, "Accessio RACF");
+        Connector connector = sailpoint.connector.ConnectorFactory.getConnector(racfApp, null);
+        RACFUserManager userManager = connector.getUserManager();
+        
+        // Get user information
+        Identity identity = context.getObjectByName(Identity.class, identityName);
+        String userType = identity.getAttribute("userType");
+        if (userType == null) userType = "AARID";
+        
+        String orgUnitId = identity.getAttribute("orgUnitId");
+        
+        // Get current roles
+        List currentRoles = userManager.getUserRoles(identityName);
+        
+        // Get org unit owner
+        String orgUnitOwner = null;
+        if (orgUnitId != null) {
+            orgUnitOwner = connector.getOrgUnitOwner(orgUnitId);
+        }
+        
+        workflow.put("userType", userType);
+        workflow.put("orgUnitId", orgUnitId);
+        workflow.put("orgUnitOwner", orgUnitOwner);
+        workflow.put("currentRoles", currentRoles);
+        
+        return "initialized";
+      </Source>
+    </Script>
+    <Transition to="Check Active Roles"/>
+  </Step>
+  
+  <Step icon="Task" name="Check Active Roles" posX="225" posY="10">
+    <Description>Check if user has active roles that need to be removed</Description>
+    <Script>
+      <Source>
+        boolean hasActiveRoles = currentRoles != null && currentRoles.size() > 0;
+        workflow.put("hasActiveRoles", hasActiveRoles);
+        
+        if (hasActiveRoles) {
+            log.info("User " + identityName + " has " + currentRoles.size() + " active roles that will be removed during deletion");
+        }
+      </Source>
+    </Script>
+    <Transition to="Determine Deletion Approvers"/>
+  </Step>
+  
+  <Step action="call:determineDeletionApprovers" icon="Task" name="Determine Deletion Approvers" posX="325" posY="10" resultVariable="approverList">
+    <Description>Determine required approvers for user deletion</Description>
+    <Arg name="identityName" value="ref:identityName"/>
+    <Arg name="userType" value="ref:userType"/>
+    <Arg name="hasActiveRoles" value="ref:hasActiveRoles"/>
+    <Script>
+      <Source>
+        import sailpoint.object.Identity;
+        import java.util.*;
+        
+        List approvers = new ArrayList();
+        Identity identity = context.getObjectByName(Identity.class, identityName);
+        
+        // User deletion always requires org unit owner approval
+        if (orgUnitOwner != null) {
+            approvers.add(orgUnitOwner);
+        }
+        
+        // For AARID users, also require line manager approval
+        if ("AARID".equals(userType) && identity.getManager() != null) {
+            approvers.add(identity.getManager().getName());
+        }
+        
+        // For users with active roles, require additional approval
+        if (hasActiveRoles) {
+            // Check if any roles are high-privilege or special
+            boolean hasHighPrivilegeRoles = false;
+            for (Object role : currentRoles) {
+                String roleType = role.toString(); // Simplified - would normally check role type
+                if (roleType.contains("Guardian") || roleType.contains("Monitor") || roleType.contains("High-Privilege")) {
+                    hasHighPrivilegeRoles = true;
+                    break;
+                }
+            }
+            
+            if (hasHighPrivilegeRoles) {
+                // Require security officer approval for high-privilege role removal
+                String securityOfficer = connector.getSecurityOfficer();
+                if (securityOfficer != null) {
+                    approvers.add(securityOfficer);
+                }
+            }
+        }
+        
+        workflow.put("approvers", approvers);
+        workflow.put("approvalRequired", approvers.size() > 0);
+        
+        return approvers;
+      </Source>
+    </Script>
+    <Transition to="Submit for Approval" when="ref:approvalRequired"/>
+    <Transition to="Execute Deletion" when="!ref:approvalRequired"/>
+  </Step>
+  
+  <Step action="call:submitForApproval" icon="Approval" name="Submit for Approval" posX="425" posY="10" resultVariable="workflowId">
+    <Description>Submit the user deletion request for approval</Description>
+    <Arg name="operationType" value="DELETE_USER"/>
+    <Arg name="targetId" value="ref:identityName"/>
+    <Arg name="attributes" value="ref:plan"/>
+    <Arg name="approvers" value="ref:approvers"/>
+    <Transition to="Wait for Approval"/>
+  </Step>
+  
+  <Step icon="Approval" name="Wait for Approval" posX="525" posY="10">
+    <Description>Wait for all required approvals</Description>
+    <Approval mode="serial" owner="ref:approvers" return="approvalSet">
+      <Arg name="workItem">
+        <WorkItem>
+          <Description>
+            Please review and approve the deletion of user: $(ref:identityName)
+            User Type: $(ref:userType)
+            Organization Unit: $(ref:orgUnitId)
+            Deletion Reason: $(ref:deletionReason)
+            $(if:ref:hasActiveRoles)Active Roles: $(ref:currentRoles)$(endif)
+            
+            WARNING: This action will permanently delete the user and remove all associated access.
+          </Description>
+          <Display name="User Deletion Approval" value="User: $(ref:identityName)"/>
+          <Form>
+            <Attributes>
+              <Map>
+                <entry key="identityName" value="ref:identityName"/>
+                <entry key="userType" value="ref:userType"/>
+                <entry key="orgUnitId" value="ref:orgUnitId"/>
+                <entry key="deletionReason" value="ref:deletionReason"/>
+                <entry key="currentRoles" value="ref:currentRoles"/>
+              </Map>
+            </Attributes>
+            <Button action="approve" label="Approve Deletion"/>
+            <Button action="reject" label="Reject"/>
+          </Form>
+        </WorkItem>
+      </Arg>
+    </Approval>
+    <Transition to="Process Approval Decision"/>
+  </Step>
+  
+  <Step action="call:processApprovalDecision" icon="Task" name="Process Approval Decision" posX="625" posY="10">
+    <Description>Process the approval decision</Description>
+    <Arg name="workflowId" value="ref:workflowId"/>
+    <Arg name="approvalSet" value="ref:approvalSet"/>
+    <Transition to="Execute Deletion" when="ref:allApproved"/>
+    <Transition to="Reject Request" when="!ref:allApproved"/>
+  </Step>
+  
+  <Step action="call:executeUserDeletion" icon="Task" name="Execute Deletion" posX="725" posY="10" resultVariable="deletionResult">
+    <Description>Execute the user deletion with role cleanup</Description>
+    <Arg name="identityName" value="ref:identityName"/>
+    <Arg name="currentRoles" value="ref:currentRoles"/>
+    <Script>
+      <Source>
+        import sailpoint.object.Application;
+        import sailpoint.connector.Connector;
+        import com.sailpoint.connector.accessio.racf.RACFUserManager;
+        import com.sailpoint.connector.accessio.racf.RACFRoleManager;
+        
+        try {
+            // Get the RACF application and connector
+            Application racfApp = context.getObjectByName(Application.class, "Accessio RACF");
+            Connector connector = sailpoint.connector.ConnectorFactory.getConnector(racfApp, null);
+            RACFUserManager userManager = connector.getUserManager();
+            RACFRoleManager roleManager = connector.getRoleManager();
+            
+            boolean success = true;
+            List errors = new ArrayList();
+            
+            // Step 1: Remove all roles first
+            if (currentRoles != null && currentRoles.size() > 0) {
+                log.info("Removing " + currentRoles.size() + " roles from user " + identityName + " before deletion");
+                
+                for (Object role : currentRoles) {
+                    try {
+                        boolean roleRemoved = roleManager.removeRoleFromUser(identityName, role.toString());
+                        if (!roleRemoved) {
+                            errors.add("Failed to remove role: " + role.toString());
+                        }
+                    } catch (Exception e) {
+                        errors.add("Error removing role " + role.toString() + ": " + e.getMessage());
+                        log.error("Error removing role " + role.toString() + " from user " + identityName, e);
+                    }
+                }
+            }
+            
+            // Step 2: Delete the user
+            if (errors.size() == 0) {
+                boolean userDeleted = userManager.deleteUser(identityName);
+                if (!userDeleted) {
+                    success = false;
+                    errors.add("Failed to delete user from RACF system");
+                }
+            } else {
+                success = false;
+                log.warn("Skipping user deletion due to role removal errors");
+            }
+            
+            workflow.put("deletionSuccess", success);
+            workflow.put("deletionErrors", errors);
+            
+        } catch (Exception e) {
+            log.error("Error executing user deletion: " + e.getMessage(), e);
+            workflow.put("deletionSuccess", false);
+            workflow.put("deletionErrors", Arrays.asList(e.getMessage()));
+        }
+      </Source>
+    </Script>
+    <Transition to="Deletion Success" when="ref:deletionSuccess"/>
+    <Transition to="Deletion Failed" when="!ref:deletionSuccess"/>
+  </Step>
+  
+  <Step icon="Task" name="Deletion Success" posX="825" posY="10">
+    <Description>Handle successful user deletion</Description>
+    <Script>
+      <Source>
+        // Log successful deletion
+        log.info("RACF user deletion completed successfully for: " + identityName + ", reason: " + deletionReason);
+        
+        // Create audit log entry
+        sailpoint.tools.Util.createAuditEvent(context, 
+            "User Deleted", 
+            "RACF user " + identityName + " has been successfully deleted. Reason: " + deletionReason,
+            identityName,
+            "User Lifecycle");
+        
+        // Send notification to requestor
+        sailpoint.tools.Util.sendNotification(context, 
+            "User Deletion Successful", 
+            "User " + identityName + " has been successfully deleted from RACF system. Reason: " + deletionReason,
+            identityName);
+      </Source>
+    </Script>
+    <Transition to="End"/>
+  </Step>
+  
+  <Step icon="Task" name="Deletion Failed" posX="825" posY="110">
+    <Description>Handle failed user deletion</Description>
+    <Script>
+      <Source>
+        // Log deletion failure
+        log.error("RACF user deletion failed for: " + identityName + ", errors: " + deletionErrors);
+        
+        // Send notification to requestor
+        sailpoint.tools.Util.sendNotification(context, 
+            "User Deletion Failed", 
+            "User " + identityName + " deletion failed in RACF system. Errors: " + deletionErrors,
+            identityName);
+      </Source>
+    </Script>
+    <Transition to="End"/>
+  </Step>
+  
+  <Step icon="Task" name="Reject Request" posX="625" posY="110">
+    <Description>Handle rejected user deletion request</Description>
+    <Script>
+      <Source>
+        // Log request rejection
+        log.info("RACF user deletion request rejected for: " + identityName);
+        
+        // Send notification to requestor
+        sailpoint.tools.Util.sendNotification(context, 
+            "User Deletion Request Rejected", 
+            "User " + identityName + " deletion request has been rejected.",
+            identityName);
+      </Source>
+    </Script>
+    <Transition to="End"/>
+  </Step>
+  
+  <Step icon="Stop" name="End" posX="925" posY="60"/>
+  
+</Workflow>

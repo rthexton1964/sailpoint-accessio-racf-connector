@@ -1,0 +1,244 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<!DOCTYPE sailpoint PUBLIC "sailpoint.dtd" "sailpoint.dtd">
+<sailpoint>
+  
+  <!-- Accessio RACF Workflow Configuration -->
+  <ImportAction name="merge" value="WorkflowConfig">
+    
+    <!-- User Creation Workflow -->
+    <WorkflowConfig name="Accessio RACF User Creation">
+      <Description>Configuration for RACF user creation workflow with multi-level approval</Description>
+      <Attributes>
+        <Map>
+          <entry key="workflowName" value="Accessio RACF User Creation Workflow"/>
+          <entry key="applicationType" value="RACF"/>
+          <entry key="operationType" value="CREATE_USER"/>
+          <entry key="approvalRequired" value="true"/>
+          <entry key="supportedUserTypes">
+            <List>
+              <String>AARID</String>
+              <String>STC</String>
+              <String>Technical</String>
+            </List>
+          </entry>
+          <entry key="requiredAttributes">
+            <List>
+              <String>identityName</String>
+              <String>userType</String>
+              <String>orgUnitId</String>
+            </List>
+          </entry>
+        </Map>
+      </Attributes>
+    </WorkflowConfig>
+    
+    <!-- Role Assignment Workflow -->
+    <WorkflowConfig name="Accessio RACF Role Assignment">
+      <Description>Configuration for RACF role assignment workflow with SoD validation</Description>
+      <Attributes>
+        <Map>
+          <entry key="workflowName" value="Accessio RACF Role Assignment Workflow"/>
+          <entry key="applicationType" value="RACF"/>
+          <entry key="operationType" value="ROLE_ASSIGNMENT"/>
+          <entry key="approvalRequired" value="true"/>
+          <entry key="sodValidation" value="true"/>
+          <entry key="supportedOperations">
+            <List>
+              <String>ADD_ROLE</String>
+              <String>REMOVE_ROLE</String>
+            </List>
+          </entry>
+          <entry key="specialRoleTypes">
+            <List>
+              <String>Guardian</String>
+              <String>Monitor</String>
+              <String>High-Privilege</String>
+            </List>
+          </entry>
+        </Map>
+      </Attributes>
+    </WorkflowConfig>
+    
+    <!-- User Modification Workflow -->
+    <WorkflowConfig name="Accessio RACF User Modification">
+      <Description>Configuration for RACF user modification workflow</Description>
+      <Attributes>
+        <Map>
+          <entry key="workflowName" value="Accessio RACF User Modification Workflow"/>
+          <entry key="applicationType" value="RACF"/>
+          <entry key="operationType" value="MODIFY_USER"/>
+          <entry key="approvalRequired" value="true"/>
+          <entry key="supportedModificationTypes">
+            <List>
+              <String>ORG_TRANSFER</String>
+              <String>ATTRIBUTE_CHANGE</String>
+              <String>STATUS_CHANGE</String>
+            </List>
+          </entry>
+          <entry key="sensitiveAttributes">
+            <List>
+              <String>userType</String>
+              <String>privilegeLevel</String>
+              <String>securityClearance</String>
+              <String>orgUnitId</String>
+            </List>
+          </entry>
+        </Map>
+      </Attributes>
+    </WorkflowConfig>
+    
+    <!-- User Deletion Workflow -->
+    <WorkflowConfig name="Accessio RACF User Deletion">
+      <Description>Configuration for RACF user deletion workflow with role cleanup</Description>
+      <Attributes>
+        <Map>
+          <entry key="workflowName" value="Accessio RACF User Deletion Workflow"/>
+          <entry key="applicationType" value="RACF"/>
+          <entry key="operationType" value="DELETE_USER"/>
+          <entry key="approvalRequired" value="true"/>
+          <entry key="roleCleanup" value="true"/>
+          <entry key="auditRequired" value="true"/>
+          <entry key="highPrivilegeApproval" value="true"/>
+        </Map>
+      </Attributes>
+    </WorkflowConfig>
+    
+  </ImportAction>
+  
+  <!-- Workflow Library Configuration -->
+  <ImportAction name="merge" value="WorkflowLibrary">
+    
+    <WorkflowLibrary name="Accessio RACF Workflow Library">
+      <Description>Library of workflow steps and utilities for RACF operations</Description>
+      
+      <!-- Initialize User Creation Request -->
+      <Step name="initializeUserCreationRequest">
+        <Description>Initialize user creation request with validation</Description>
+        <Script>
+          <Source>
+            import sailpoint.object.Identity;
+            import sailpoint.object.Application;
+            import sailpoint.connector.Connector;
+            import com.sailpoint.connector.accessio.racf.ApprovalWorkflowHandler;
+            
+            // Get the RACF application and connector
+            Application racfApp = context.getObjectByName(Application.class, "Accessio RACF");
+            Connector connector = sailpoint.connector.ConnectorFactory.getConnector(racfApp, null);
+            ApprovalWorkflowHandler workflowHandler = connector.getApprovalWorkflowHandler();
+            
+            // Initialize the workflow request
+            String requestId = workflowHandler.initializeWorkflow("CREATE_USER", identityName, userType, plan);
+            workflow.put("workflowRequestId", requestId);
+            
+            return requestId;
+          </Source>
+        </Script>
+      </Step>
+      
+      <!-- Determine Approvers -->
+      <Step name="determineApprovers">
+        <Description>Determine required approvers based on user type and operation</Description>
+        <Script>
+          <Source>
+            import sailpoint.object.Application;
+            import sailpoint.connector.Connector;
+            import com.sailpoint.connector.accessio.racf.ApprovalWorkflowHandler;
+            
+            // Get the RACF application and connector
+            Application racfApp = context.getObjectByName(Application.class, "Accessio RACF");
+            Connector connector = sailpoint.connector.ConnectorFactory.getConnector(racfApp, null);
+            ApprovalWorkflowHandler workflowHandler = connector.getApprovalWorkflowHandler();
+            
+            // Get approvers for the operation
+            List approvers = workflowHandler.getApprovers("CREATE_USER", identityName, userType, orgUnitId);
+            
+            return approvers;
+          </Source>
+        </Script>
+      </Step>
+      
+      <!-- Submit for Approval -->
+      <Step name="submitForApproval">
+        <Description>Submit request for approval workflow</Description>
+        <Script>
+          <Source>
+            import sailpoint.object.Application;
+            import sailpoint.connector.Connector;
+            import com.sailpoint.connector.accessio.racf.ApprovalWorkflowHandler;
+            
+            // Get the RACF application and connector
+            Application racfApp = context.getObjectByName(Application.class, "Accessio RACF");
+            Connector connector = sailpoint.connector.ConnectorFactory.getConnector(racfApp, null);
+            ApprovalWorkflowHandler workflowHandler = connector.getApprovalWorkflowHandler();
+            
+            // Submit for approval
+            String workflowId = workflowHandler.submitForApproval(operationType, targetId, attributes, approvers);
+            
+            return workflowId;
+          </Source>
+        </Script>
+      </Step>
+      
+      <!-- Process Approval Decision -->
+      <Step name="processApprovalDecision">
+        <Description>Process approval decisions and update workflow state</Description>
+        <Script>
+          <Source>
+            import sailpoint.object.Application;
+            import sailpoint.connector.Connector;
+            import com.sailpoint.connector.accessio.racf.ApprovalWorkflowHandler;
+            
+            // Get the RACF application and connector
+            Application racfApp = context.getObjectByName(Application.class, "Accessio RACF");
+            Connector connector = sailpoint.connector.ConnectorFactory.getConnector(racfApp, null);
+            ApprovalWorkflowHandler workflowHandler = connector.getApprovalWorkflowHandler();
+            
+            // Process approval decisions
+            boolean allApproved = workflowHandler.processApprovalDecisions(workflowId, approvalSet);
+            workflow.put("allApproved", allApproved);
+            
+            return allApproved;
+          </Source>
+        </Script>
+      </Step>
+      
+      <!-- Execute User Creation -->
+      <Step name="executeUserCreation">
+        <Description>Execute user creation in RACF system</Description>
+        <Script>
+          <Source>
+            import sailpoint.object.Application;
+            import sailpoint.connector.Connector;
+            import com.sailpoint.connector.accessio.racf.RACFUserManager;
+            
+            try {
+                // Get the RACF application and connector
+                Application racfApp = context.getObjectByName(Application.class, "Accessio RACF");
+                Connector connector = sailpoint.connector.ConnectorFactory.getConnector(racfApp, null);
+                RACFUserManager userManager = connector.getUserManager();
+                
+                // Execute user creation
+                boolean success = userManager.createUser(identityName, plan);
+                workflow.put("creationSuccess", success);
+                
+                if (!success) {
+                    workflow.put("creationErrors", userManager.getLastErrors());
+                }
+                
+                return success;
+                
+            } catch (Exception e) {
+                log.error("Error executing user creation: " + e.getMessage(), e);
+                workflow.put("creationSuccess", false);
+                workflow.put("creationErrors", Arrays.asList(e.getMessage()));
+                return false;
+            }
+          </Source>
+        </Script>
+      </Step>
+      
+    </WorkflowLibrary>
+    
+  </ImportAction>
+  
+</sailpoint>

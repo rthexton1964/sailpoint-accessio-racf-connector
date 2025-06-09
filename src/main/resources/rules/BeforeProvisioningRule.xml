@@ -1,0 +1,179 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<!DOCTYPE Rule PUBLIC "sailpoint.dtd" "sailpoint.dtd">
+<Rule language="beanshell" name="Accessio RACF Before Provisioning Rule" type="BeforeProvisioning">
+  
+  <Description>
+    Before provisioning rule for Accessio RACF application.
+    Performs validation, attribute population, and pre-processing before provisioning operations.
+  </Description>
+  
+  <Source>
+    import sailpoint.object.*;
+    import sailpoint.object.ProvisioningPlan.*;
+    import sailpoint.api.SailPointContext;
+    import sailpoint.connector.Connector;
+    import com.sailpoint.connector.accessio.racf.*;
+    import java.util.*;
+    import org.apache.log4j.Logger;
+    
+    Logger log = Logger.getLogger("com.sailpoint.connector.accessio.racf.BeforeProvisioningRule");
+    
+    try {
+        log.info("Executing Before Provisioning Rule for identity: " + identity.getName());
+        
+        // Get the RACF application and connector
+        Application racfApp = context.getObjectByName(Application.class, "Accessio RACF");
+        Connector connector = sailpoint.connector.ConnectorFactory.getConnector(racfApp, null);
+        
+        if (plan != null && plan.getAccountRequests() != null) {
+            for (AccountRequest accountRequest : plan.getAccountRequests()) {
+                
+                // 1. Validate User Type
+                AttributeRequest userTypeReq = accountRequest.getAttributeRequest("userType");
+                String userType = userTypeReq != null ? (String) userTypeReq.getValue() : "AARID";
+                
+                List validUserTypes = Arrays.asList("AARID", "STC", "Technical");
+                if (!validUserTypes.contains(userType)) {
+                    log.error("Invalid user type: " + userType);
+                    throw new Exception("Invalid user type. Must be one of: " + validUserTypes);
+                }
+                
+                // 2. Validate Organization Unit
+                AttributeRequest orgUnitReq = accountRequest.getAttributeRequest("BASEORG_ID");
+                if (orgUnitReq != null && orgUnitReq.getValue() != null) {
+                    String orgUnitId = (String) orgUnitReq.getValue();
+                    
+                    // Validate org unit exists
+                    try {
+                        GarancyAPIClient apiClient = connector.getGarancyAPIClient();
+                        if (!apiClient.orgUnitExists(orgUnitId)) {
+                            log.error("Organization unit does not exist: " + orgUnitId);
+                            throw new Exception("Invalid organization unit ID: " + orgUnitId);
+                        }
+                    } catch (Exception e) {
+                        log.warn("Could not validate org unit (API unavailable): " + e.getMessage());
+                    }
+                }
+                
+                // 3. Populate Default Attributes for Creation
+                if (accountRequest.getOperation() == AccountRequest.Operation.Create) {
+                    
+                    // Set default user type if not specified
+                    if (userTypeReq == null) {
+                        accountRequest.add(new AttributeRequest("userType", "AARID"));
+                        log.info("Set default user type to AARID for " + identity.getName());
+                    }
+                    
+                    // Set creation timestamp
+                    accountRequest.add(new AttributeRequest("created", new Date()));
+                    
+                    // Set enabled status
+                    if (accountRequest.getAttributeRequest("enabled") == null) {
+                        accountRequest.add(new AttributeRequest("enabled", true));
+                    }
+                    
+                    // Populate email if missing
+                    if (accountRequest.getAttributeRequest("BASEUS_EMAIL") == null && identity.getEmail() != null) {
+                        accountRequest.add(new AttributeRequest("BASEUS_EMAIL", identity.getEmail()));
+                    }
+                    
+                    // Populate name fields if missing
+                    if (accountRequest.getAttributeRequest("BASEUS_FIRST_NAME") == null && identity.getFirstname() != null) {
+                        accountRequest.add(new AttributeRequest("BASEUS_FIRST_NAME", identity.getFirstname()));
+                    }
+                    
+                    if (accountRequest.getAttributeRequest("BASEUS_LAST_NAME") == null && identity.getLastname() != null) {
+                        accountRequest.add(new AttributeRequest("BASEUS_LAST_NAME", identity.getLastname()));
+                    }
+                }
+                
+                // 4. Set modification timestamp for all operations
+                accountRequest.add(new AttributeRequest("lastModified", new Date()));
+                
+                // 5. Validate Role Assignments
+                AttributeRequest rolesReq = accountRequest.getAttributeRequest("roles");
+                if (rolesReq != null && rolesReq.getValue() != null) {
+                    
+                    List roles = (List) rolesReq.getValue();
+                    if (roles != null && !roles.isEmpty()) {
+                        
+                        try {
+                            RACFRoleManager roleManager = connector.getRoleManager();
+                            
+                            for (Object role : roles) {
+                                String roleId = role.toString();
+                                
+                                // Validate role exists
+                                if (!roleManager.roleExists(roleId)) {
+                                    log.error("Role does not exist: " + roleId);
+                                    throw new Exception("Invalid role ID: " + roleId);
+                                }
+                                
+                                // Check if role assignment is allowed for user type
+                                String roleType = roleManager.getRoleType(roleId);
+                                if ("Guardian".equals(roleType) || "Monitor".equals(roleType)) {
+                                    if (!"Technical".equals(userType)) {
+                                        log.error("Guardian/Monitor roles can only be assigned to Technical users");
+                                        throw new Exception("Guardian/Monitor roles can only be assigned to Technical users");
+                                    }
+                                }
+                            }
+                            
+                            // Perform SoD validation for role additions
+                            if (accountRequest.getOperation() == AccountRequest.Operation.Modify) {
+                                List sodConflicts = roleManager.validateRoleAssignment(identity.getName(), roles);
+                                if (sodConflicts != null && !sodConflicts.isEmpty()) {
+                                    
+                                    // Check for high-risk conflicts
+                                    boolean hasHighRisk = false;
+                                    for (Object conflict : sodConflicts) {
+                                        if (conflict.toString().contains("HIGH_RISK")) {
+                                            hasHighRisk = true;
+                                            break;
+                                        }
+                                    }
+                                    
+                                    if (hasHighRisk) {
+                                        log.error("High-risk SoD conflicts detected for " + identity.getName() + ": " + sodConflicts);
+                                        throw new Exception("High-risk SoD conflicts detected. Role assignment rejected.");
+                                    } else {
+                                        log.warn("SoD conflicts detected for " + identity.getName() + ": " + sodConflicts);
+                                        // Store conflicts for approval workflow
+                                        accountRequest.add(new AttributeRequest("sodConflicts", sodConflicts));
+                                    }
+                                }
+                            }
+                            
+                        } catch (Exception e) {
+                            log.warn("Could not validate roles (API unavailable): " + e.getMessage());
+                        }
+                    }
+                }
+                
+                // 6. Set Workflow Context
+                Map workflowContext = new HashMap();
+                workflowContext.put("identityName", identity.getName());
+                workflowContext.put("userType", userType);
+                workflowContext.put("operation", accountRequest.getOperation().toString());
+                workflowContext.put("timestamp", new Date());
+                
+                if (orgUnitReq != null) {
+                    workflowContext.put("orgUnitId", orgUnitReq.getValue());
+                }
+                
+                // Store workflow context for use in workflows
+                accountRequest.add(new AttributeRequest("workflowContext", workflowContext));
+                
+                log.info("Before provisioning validation completed successfully for " + identity.getName());
+            }
+        }
+        
+    } catch (Exception e) {
+        log.error("Error in Before Provisioning Rule: " + e.getMessage(), e);
+        throw e;
+    }
+    
+    return plan;
+  </Source>
+  
+</Rule>
